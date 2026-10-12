@@ -1,0 +1,14 @@
+# Foundry build output and deployment logs
+contracts/out/
+contracts/cache/
+contracts/broadcast/
+
+# Front end of the on-chain version (appears at milestone 6)
+app/node_modules/
+app/dist/
+
+# Shared package
+shared/node_modules/
+
+# Local Claude Code permissions (not shared with the team)
+.claude/settings.local.json

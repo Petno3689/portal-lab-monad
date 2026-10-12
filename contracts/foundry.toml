@@ -1,0 +1,35 @@
+[profile.default]
+src = "src"
+out = "out"
+test = "test"
+libs = ["lib"]
+fs_permissions = [{ access = "read-write", path = "../shared/test/vectors" }]
+
+solc_version = "0.8.28"
+evm_version = "cancun"
+optimizer = true
+optimizer_runs = 200
+via_ir = true
+# The default profile keeps Foundry's stock gas and memory caps as a safety fuse:
+# the dual-simulation test defaults to SEEDS=4 (see IdealGameTest), which fits
+# inside those caps. Anything heavier — the 128-seed sweep — must run under the
+# [profile.sweep] profile below, which lifts the caps deliberately. Do NOT raise
+# the caps here: a runaway loop should fail fast rather than exhaust the machine.
+
+# Required for contract verification on the Monad explorer
+bytecode_hash = "none"
+cbor_metadata = true
+use_literal_content = true
+
+# Heavy-sweep profile for the 128-seed dualSimulation run.
+# Usage: FOUNDRY_PROFILE=sweep SEEDS=128 forge test --match-test dualSimulation -vv
+# The dual-simulation runs its seeds sequentially in one EVM call and EVM memory
+# never shrinks between games, so both gas and heap grow with the seed count. 128
+# seeds needs a lifted gas cap (max uint64) and a large heap. Raise only when you
+# have the RAM; the default profile (SEEDS=8, stock caps) is the normal fast run.
+[profile.sweep]
+gas_limit = "18446744073709551615"
+memory_limit = 8589934592
+
+[rpc_endpoints]
+monad_testnet = "https://testnet-rpc.monad.xyz"

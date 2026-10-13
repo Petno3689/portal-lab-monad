@@ -9,3 +9,6 @@
 *.ico binary
 *.woff binary
 *.woff2 binary
+
+# Third-party library: keep it out of GitHub language statistics.
+contracts/lib/** linguist-vendored

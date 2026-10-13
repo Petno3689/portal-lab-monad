@@ -12,3 +12,6 @@ shared/node_modules/
 
 # Local Claude Code permissions (not shared with the team)
 .claude/settings.local.json
+
+# Claude Code scheduler lock (service file, never versioned)
+.claude/scheduled_tasks.lock

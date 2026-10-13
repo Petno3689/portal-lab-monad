@@ -26,7 +26,7 @@ use_literal_content = true
 # The dual-simulation runs its seeds sequentially in one EVM call and EVM memory
 # never shrinks between games, so both gas and heap grow with the seed count. 128
 # seeds needs a lifted gas cap (max uint64) and a large heap. Raise only when you
-# have the RAM; the default profile (SEEDS=8, stock caps) is the normal fast run.
+# have the RAM; the default profile (SEEDS=4, stock caps) is the normal fast run.
 [profile.sweep]
 gas_limit = "18446744073709551615"
 memory_limit = 8589934592

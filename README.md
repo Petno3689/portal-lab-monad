@@ -43,6 +43,21 @@ both the Solidity test suite and the TypeScript mirror, so the two
 implementations are checked against the same numbers rather than against
 each other's assumptions.
 
+## Why Monad
+
+One game hour is fifteen real seconds, and the world ages lazily: whenever
+the contract is next touched, it computes the whole elapsed span in closed
+form. A player therefore signs a transaction every few seconds, and almost
+every one of them carries both a Pyth Entropy request and a catch-up over
+the game hours that passed while the transaction was in flight.
+
+That shape only works where blocks are fast and gas is cheap. On a slower
+chain the clock outruns the blocks: the world a player acts on is already
+stale by the time the action lands, and the catch-up grows with every second
+of latency. On an expensive chain the per-action fee makes a twenty-minute
+session absurd. Monad is what makes real-time play affordable at per-action
+granularity.
+
 ## Stack
 
 Foundry, Solidity 0.8.28, Pyth Entropy V2, React, Vite, viem.
@@ -86,9 +101,20 @@ Code and reviewed every diff before it landed.
 
 ## Pre-existing components
 
-An off-chain React/TypeScript prototype of the same game existed before this
-hackathon. The on-chain contracts in `contracts/`, the TypeScript mirror in
-`shared/`, and the front end in `app/` were all written for this submission,
-targeting that earlier prototype's game design. `forge-std`
+The on-chain work is based on the game design of an off-chain React/TypeScript
+prototype. That prototype was built starting 14 September 2026, inside the
+hackathon period, as a separate off-chain exercise. The on-chain contracts in
+`contracts/`, the TypeScript mirror in `shared/`, and the front end in `app/`
+were written afterwards, also inside the hackathon period. `forge-std`
 (`contracts/lib/forge-std/`) is vendored external code, not written for this
 project.
+
+## Repository history
+
+This repository holds only a handful of commits, all of them recent. That is
+because the on-chain project was moved into a repository of its own on
+12 October 2026; it says nothing about when the work was done. Work on the
+design started on 14 September 2026 in the earlier repository, and the
+contract first reached Monad testnet on 30 September 2026 (`docs/SPEC.md`,
+section 14.2). The earlier history lives in a separate private repository that
+also contains unrelated work, so it is not published.

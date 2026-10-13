@@ -477,9 +477,13 @@ contract SettleTest is Test {
         uint32 h2 = harness.bestRun(a2).hoursSurvived;
         uint32 h3 = harness.bestRun(a3).hoursSurvived;
 
+        // The property: the recorded death hour is the same whenever settle() runs.
         assertEq(h1, h2, "diedAtHour must not depend on when settle() is called");
         assertEq(h1, h3, "diedAtHour must not depend on when settle() is called");
-        assertEq(h1, 124, "expected death hour is 124 for default config");
+        // Secondary sanity check only: this literal tracks the seeded starting
+        // spawn pressure (ticket 8.1) and moves with it; the equalities above are
+        // the real assertion.
+        assertEq(h1, 97, "expected death hour is 97 for default config");
     }
 
     // ── 4.2: game dies during absence, then startGame → no GameForfeited ──────

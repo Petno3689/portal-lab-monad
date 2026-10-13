@@ -241,7 +241,7 @@ contract PortalLab is IRandomConsumer {
     /// they have a finished-but-unsettled game, the result is auto-settled before
     /// the record is deleted, so the run is not lost (SPEC §15). A live game that
     /// is simply abandoned is NOT recorded — the player chose not to engage.
-    function startGame() external {
+    function startGame() external payable {
         address player = msg.sender;
         Game storage existing = _players[player].game;
 
@@ -300,10 +300,38 @@ contract PortalLab is IRandomConsumer {
         game.power = _config.powerMax;
         game.observersFree = _config.observersTotal;
         game.rescuersFree = _config.rescuersTotal;
-        // hoursElapsed, diedAtHour, openPortals, spawnDebt, spawnCount,
-        // rngNonce = 0; finished = false — all left at their zeroed defaults.
+        // A starting hand: three portals' worth of pressure is already accrued, so
+        // the first walked game hour spawns `maxSpawnsPerTx` portals (Ticket 8.1).
+        game.spawnDebt = 3 * _config.spawnCostUnits;
+        // hoursElapsed, diedAtHour, openPortals, spawnCount, rngNonce = 0;
+        // finished = false — all left at their zeroed defaults.
 
         emit GameStarted(player, nowTs);
+
+        // Optional fee: buy the first word now, exactly like a paid `sync` that
+        // crosses the pinned edge (epoch 0 is not covered on a fresh game). With no
+        // value attached nothing is requested and the call behaves as before.
+        if (msg.value > 0) {
+            if (_players[player].pending.active) revert ActionPending();
+            uint256 f = _randomSource.fee();
+            if (msg.value < f) revert InsufficientFee(f, msg.value);
+
+            _players[player].pending = Pending({
+                active: true,
+                action: Action.ToggleQuestioned, // unused (syncOnly); a harmless default
+                slot: 0,
+                atHour: 0,
+                requestId: 0,
+                coveredEpochs: _players[player].pending.coveredEpochs,
+                deferredWorld: true,
+                syncOnly: true,
+                committedAt: nowTs
+            });
+            uint64 requestId = _randomSource.requestWord{value: f}(player);
+            _players[player].pending.requestId = requestId;
+
+            if (msg.value > f) _refund(msg.sender, msg.value - f);
+        }
     }
 
     /// @notice Perform `action` on portal `slot` for `msg.sender`.

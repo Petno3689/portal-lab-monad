@@ -276,8 +276,12 @@ contract EpochSpawnTest is Test {
         _warpHours(EPH - 4);
         _advance();
 
-        // Now jump far past the pinned edge WITHOUT paying.
-        _warpHours(10 * EPH);
+        // Now jump past the pinned edge WITHOUT paying. The absence must stay
+        // short: the seeded starting pressure kills an unattended lab at hour 97,
+        // and a dead lab is a different code path (a deterministic §5.5 death is
+        // evaluated over the FULL window, so the walk reports the death hour
+        // rather than stopping at the edge). 4 * EPH keeps the lab alive there.
+        _warpHours(4 * EPH);
 
         (Game memory gp, Portal[MAX_OPEN_PORTALS] memory pp, bool capped) = harness.preview(player);
 

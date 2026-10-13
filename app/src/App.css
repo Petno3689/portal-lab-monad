@@ -1,0 +1,257 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Source Sans Pro',
+    sans-serif;
+  background: #0a0e27;
+  color: #e0e0e0;
+}
+
+.app {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem 2rem;
+  background: #1a2147;
+  border-bottom: 1px solid #2a4a9a;
+}
+
+.header h1 {
+  margin: 0;
+  font-size: 1.5rem;
+  color: #ffd700;
+}
+
+.wallet-section {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.address {
+  font-family: monospace;
+  padding: 0.5rem 1rem;
+  background: #2a4a9a;
+  border-radius: 4px;
+}
+
+button {
+  padding: 0.5rem 1rem;
+  border: 1px solid #3a6aaa;
+  border-radius: 4px;
+  background: #1a3a7a;
+  color: #e0e0e0;
+  cursor: pointer;
+  font-size: 0.9rem;
+  transition: all 0.2s;
+}
+
+button:hover {
+  background: #2a4a9a;
+  border-color: #5a8aaa;
+}
+
+button.primary {
+  background: #4a9aca;
+  border-color: #5a9ada;
+}
+
+button.primary:hover {
+  background: #5aaaaa;
+}
+
+button.secondary {
+  background: #3a6a8a;
+}
+
+button.secondary:hover {
+  background: #4a7a9a;
+}
+
+button.danger {
+  background: #8a3a3a;
+  border-color: #aa5a5a;
+}
+
+button.danger:hover {
+  background: #9a4a4a;
+}
+
+.error-message {
+  padding: 1rem;
+  margin: 1rem;
+  background: #5a2a2a;
+  border: 1px solid #aa4a4a;
+  border-radius: 4px;
+  color: #ff8080;
+}
+
+.warn-message {
+  padding: 1rem;
+  margin: 1rem;
+  background: #5a4a1a;
+  border: 1px solid #aa8a2a;
+  border-radius: 4px;
+  color: #ffd060;
+}
+
+.info-message {
+  padding: 1rem;
+  margin: 1rem;
+  background: #2a5a3a;
+  border: 1px solid #4a8a5a;
+  border-radius: 4px;
+  color: #80ff80;
+}
+
+.loading,
+.no-game {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  padding: 2rem;
+}
+
+.no-game p {
+  margin-bottom: 2rem;
+  font-size: 1.2rem;
+}
+
+.game-container {
+  flex: 1;
+  padding: 2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+}
+
+.stats-panel {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 1rem;
+  background: #1a2147;
+  padding: 1rem;
+  border-radius: 4px;
+  border: 1px solid #2a4a9a;
+}
+
+.stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.stat label {
+  font-size: 0.9rem;
+  color: #a0a0a0;
+}
+
+.stat .value {
+  font-size: 1.5rem;
+  font-weight: bold;
+  color: #ffd700;
+}
+
+.portals-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 1rem;
+}
+
+.portal {
+  background: #1a2147;
+  border: 1px solid #2a4a9a;
+  border-radius: 4px;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.portal.empty {
+  border-color: #4a3a4a;
+}
+
+.portal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.portal-header h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.type {
+  font-size: 0.8rem;
+  padding: 0.25rem 0.5rem;
+  background: #2a4a9a;
+  border-radius: 3px;
+}
+
+.empty-slot {
+  color: #707070;
+  text-align: center;
+  padding: 1rem;
+}
+
+.portal-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.9rem;
+}
+
+.info-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.info-item span:first-child {
+  color: #a0a0a0;
+}
+
+.info-item span:last-child {
+  color: #ffd700;
+  font-weight: bold;
+}
+
+.action-buttons {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.25rem;
+  margin-top: 0.5rem;
+}
+
+.action-buttons button {
+  padding: 0.4rem 0.2rem;
+  font-size: 0.8rem;
+}
+
+.game-controls {
+  display: flex;
+  gap: 1rem;
+  justify-content: center;
+  padding: 1rem;
+}
+
+.game-controls button {
+  padding: 0.75rem 1.5rem;
+}

@@ -614,7 +614,7 @@ contract GenCatchUpVectors is Script {
                 Portal memory p;
                 p.id = uint16(1 + (y >> 4) % 500);
                 p.portalType = PortalType((y >> 8) % 5);
-                p.nameIndex = uint16((y >> 12) % 24);
+                p.nameIndex = uint8((y >> 12) % 24);
                 p.status = (y >> 16) % 4 == 0 ? PortalStatus.Questioned : PortalStatus.Open;
                 p.surveyed = (y >> 20) % 3 != 0;
                 p.creaturesKnown = p.surveyed ? (y >> 24) % 8 != 0 : (y >> 24) % 3 == 0;

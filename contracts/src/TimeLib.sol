@@ -111,7 +111,7 @@ library TimeLib {
     struct Spawn {
         uint8 slot;
         PortalType portalType;
-        uint16 nameIndex;
+        uint8 nameIndex;
         uint32 atHour;
     }
 
@@ -577,7 +577,7 @@ library TimeLib {
         // uint8-only.
         uint256 span = uint256(tp.hoursMax) - uint256(tp.hoursMin) + 1;
         uint16 htc = uint16(uint256(tp.hoursMin) + (_spawnDraw(w.seed, spawnId, SALT_HOURS) % span));
-        uint16 nameIndex = uint16(_spawnDraw(w.seed, spawnId, SALT_NAME) % NAME_POOL_SIZE);
+        uint8 nameIndex = uint8(_spawnDraw(w.seed, spawnId, SALT_NAME) % NAME_POOL_SIZE);
 
         Portal memory np; // built fresh, never by copy (CLAUDE.md rule)
         np.id = uint16(spawnId);

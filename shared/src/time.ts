@@ -586,7 +586,7 @@ function birth(
     // Exact, always-public collapse time inside the type's range.
     const span = subChecked(tp.hoursMax, tp.hoursMin) + 1n;
     const htc = trunc(tp.hoursMin + (spawnDraw(w.seed, spawnId, SALT_HOURS) % span), 16);
-    const nameIndex = trunc(spawnDraw(w.seed, spawnId, SALT_NAME) % NAME_POOL_SIZE, 16);
+    const nameIndex = trunc(spawnDraw(w.seed, spawnId, SALT_NAME) % NAME_POOL_SIZE, 8);
 
     // Built FRESH from zeros, never copied from another portal: `surveyed`,
     // `surveyPending`, the crew flags and the exact values all stay at their
@@ -595,6 +595,7 @@ function birth(
     np.id = trunc(spawnId, 16);
     np.portalType = portalType;
     np.nameIndex = nameIndex;
+    np.narrowedOnce = false;
     np.status = PortalStatus.Open;
     np.hoursToCollapse = htc;
     np.spawnedAtHour = trunc(b, 32);

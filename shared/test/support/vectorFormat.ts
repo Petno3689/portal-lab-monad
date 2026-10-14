@@ -133,6 +133,7 @@ export function portalFromJson(o: Json): Portal {
         nameIndex: big(o, "nameIndex"),
         status: Number(big(o, "status")) as PortalStatus,
         surveyed: bool(o, "surveyed"),
+        narrowedOnce: bool(o, "narrowedOnce"),
         observerInside: bool(o, "observerInside"),
         rescuerInside: bool(o, "rescuerInside"),
         surveyPending: bool(o, "surveyPending"),
@@ -185,7 +186,6 @@ export function configFromJson(o: Json): Config {
         spawnCostUnits: big(o, "spawnCostUnits"),
         closePressureBonus: big(o, "closePressureBonus"),
         rangeWidenPerHour: big(o, "rangeWidenPerHour"),
-        deafNarrowThreshold: big(o, "deafNarrowThreshold"),
         epochHours: big(o, "epochHours"),
         requestTimeoutHours: big(o, "requestTimeoutHours"),
     };

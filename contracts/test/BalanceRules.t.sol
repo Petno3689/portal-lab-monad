@@ -252,7 +252,6 @@ contract BalanceRulesTest is Test {
         // cleared again on reveal (SPEC §6.3), so after the full survey it is false.
         // The observer stays inside waiting for a recall and a second visit.
         Config memory c = DefaultConfig.config();
-        assertEq(c.deafNarrowThreshold, 10); // anchor
 
         Portal memory p;
         p.status = PortalStatus.Open;

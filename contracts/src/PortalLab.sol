@@ -114,7 +114,7 @@ contract PortalLab is IRandomConsumer {
     /// @notice A portal appeared during catch-up (SPEC §7). `slot` is the freed
     /// slot it took, `atHour` the game hour it spawned. The name itself is NOT
     /// on-chain — only `nameIndex`; the front end maps the index to a name.
-    event PortalSpawned(address indexed player, uint8 indexed slot, PortalType portalType, uint16 nameIndex, uint32 atHour);
+    event PortalSpawned(address indexed player, uint8 indexed slot, PortalType portalType, uint8 nameIndex, uint32 atHour);
 
     /// @notice A rescuer walked into a portal blind and found it empty, so never
     /// entered (SPEC §4.3). They leave for recovery and rejoin the free pool at

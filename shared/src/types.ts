@@ -88,6 +88,7 @@ export interface Portal {
     nameIndex: bigint;
     status: PortalStatus;
     surveyed: boolean;
+    narrowedOnce: boolean;
     observerInside: boolean;
     rescuerInside: boolean;
     surveyPending: boolean;
@@ -202,7 +203,6 @@ export interface Config {
     closePressureBonus: bigint;
     // survey / knowledge decay
     rangeWidenPerHour: bigint;
-    deafNarrowThreshold: bigint;
     // spawn entropy
     epochHours: bigint;
     requestTimeoutHours: bigint;

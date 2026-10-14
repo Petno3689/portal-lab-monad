@@ -51,7 +51,6 @@ library GameConfig {
         c.closePressureBonus = 2500;
         // survey / knowledge decay
         c.rangeWidenPerHour = 1;
-        c.deafNarrowThreshold = 10;
         // spawn entropy — one random word pinned per 12 game-hour epoch (Ticket 4.5).
         c.epochHours = 12;
         // a deferral stuck this long (real time) can be cancelled by anyone (Ticket 4.7).

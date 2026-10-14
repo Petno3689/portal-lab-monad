@@ -62,6 +62,7 @@ library VectorCodec {
             kv("nameIndex", p.nameIndex), ",",
             kv("status", uint8(p.status)), ",",
             kb("surveyed", p.surveyed), ",",
+            kb("narrowedOnce", p.narrowedOnce), ",",
             kb("observerInside", p.observerInside), ",",
             kb("rescuerInside", p.rescuerInside), ",",
             kb("surveyPending", p.surveyPending), ",",
@@ -121,7 +122,6 @@ library VectorCodec {
             kv("spawnCostUnits", c.spawnCostUnits), ",",
             kv("closePressureBonus", c.closePressureBonus), ",",
             kv("rangeWidenPerHour", c.rangeWidenPerHour), ",",
-            kv("deafNarrowThreshold", c.deafNarrowThreshold), ",",
             kv("epochHours", c.epochHours), ",",
             kv("requestTimeoutHours", c.requestTimeoutHours)
         );
@@ -297,6 +297,7 @@ library VectorCodec {
         uint256[] memory nameIndex = _u(json, path, "nameIndex");
         uint256[] memory status = _u(json, path, "status");
         bool[] memory surveyed = _b(json, path, "surveyed");
+        bool[] memory narrowedOnce = _b(json, path, "narrowedOnce");
         bool[] memory observerInside = _b(json, path, "observerInside");
         bool[] memory rescuerInside = _b(json, path, "rescuerInside");
         bool[] memory surveyPending = _b(json, path, "surveyPending");
@@ -305,9 +306,10 @@ library VectorCodec {
         for (uint256 i = 0; i < out.length; i++) {
             Portal memory p = out[i];
             p.portalType = PortalType(portalType[i]);
-            p.nameIndex = uint16(nameIndex[i]);
+            p.nameIndex = uint8(nameIndex[i]);
             p.status = PortalStatus(status[i]);
             p.surveyed = surveyed[i];
+            p.narrowedOnce = narrowedOnce[i];
             p.observerInside = observerInside[i];
             p.rescuerInside = rescuerInside[i];
             p.surveyPending = surveyPending[i];
@@ -421,7 +423,6 @@ library VectorCodec {
         uint256[] memory spawnCostUnits = _u(json, path, "spawnCostUnits");
         uint256[] memory closePressureBonus = _u(json, path, "closePressureBonus");
         uint256[] memory rangeWidenPerHour = _u(json, path, "rangeWidenPerHour");
-        uint256[] memory deafNarrowThreshold = _u(json, path, "deafNarrowThreshold");
         uint256[] memory epochHours = _u(json, path, "epochHours");
         uint256[] memory requestTimeoutHours = _u(json, path, "requestTimeoutHours");
         for (uint256 i = 0; i < out.length; i++) {
@@ -433,7 +434,6 @@ library VectorCodec {
             c.spawnCostUnits = uint32(spawnCostUnits[i]);
             c.closePressureBonus = uint32(closePressureBonus[i]);
             c.rangeWidenPerHour = uint8(rangeWidenPerHour[i]);
-            c.deafNarrowThreshold = uint8(deafNarrowThreshold[i]);
             c.epochHours = uint16(epochHours[i]);
             c.requestTimeoutHours = uint16(requestTimeoutHours[i]);
         }
@@ -538,7 +538,7 @@ library VectorCodec {
         for (uint256 i = 0; i < out.length; i++) {
             out[i].slot = uint8(slot[i]);
             out[i].portalType = PortalType(portalType[i]);
-            out[i].nameIndex = uint16(nameIndex[i]);
+            out[i].nameIndex = uint8(nameIndex[i]);
             out[i].atHour = uint32(atHour[i]);
         }
     }

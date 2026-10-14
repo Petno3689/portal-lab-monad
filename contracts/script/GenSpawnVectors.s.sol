@@ -525,7 +525,7 @@ contract GenSpawnVectors is Script {
     function _probeName(Config[] memory cfgs, PortalTypeParams[] memory tps, uint256 word)
         private
         pure
-        returns (uint8 spN, uint16 nameIndex)
+        returns (uint8 spN, uint8 nameIndex)
     {
         Game memory g = _g();
         Portal[12] memory p;
@@ -548,7 +548,7 @@ contract GenSpawnVectors is Script {
         bool found;
         for (uint256 k = 0; k < 600 && !found; k++) {
             uint256 cand = uint256(keccak256(abi.encode("portal-lab-spawn-name", target, k)));
-            (uint8 spN, uint16 nameIndex) = _probeName(cfgs, tps, cand);
+            (uint8 spN, uint8 nameIndex) = _probeName(cfgs, tps, cand);
             if (spN == 1 && nameIndex == target) {
                 word = cand;
                 found = true;
@@ -705,7 +705,7 @@ contract GenSpawnVectors is Script {
                 Portal memory p;
                 p.id = uint16(1 + (y >> 4) % 500);
                 p.portalType = PortalType((y >> 8) % 5);
-                p.nameIndex = uint16((y >> 12) % 24);
+                p.nameIndex = uint8((y >> 12) % 24);
                 p.status = (y >> 16) % 4 == 0 ? PortalStatus.Questioned : PortalStatus.Open;
                 p.surveyed = (y >> 20) % 3 != 0;
                 p.creaturesKnown = p.surveyed ? (y >> 24) % 8 != 0 : (y >> 24) % 3 == 0;

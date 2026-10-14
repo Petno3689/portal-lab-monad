@@ -134,8 +134,8 @@ enum PortalStatus {
 /// @notice A single portal.
 /// @dev Packed into one 32-byte storage slot by declaration order (32 bytes
 /// of 32 used). All fields together fit without crossing a slot boundary:
-///   id(2) + portalType(1) + nameIndex(2) + status(1) + surveyed(1)
-///   + observerInside(1) + rescuerInside(1) + surveyPending(1)
+///   id(2) + portalType(1) + nameIndex(1) + status(1) + surveyed(1)
+///   + narrowedOnce(1) + observerInside(1) + rescuerInside(1) + surveyPending(1)
 ///   + rescuerPending(1) + creaturesKnown(1) + energy(1) + stability(1)
 ///   + creatures(1) + hoursToCollapse(2) + spawnedAtHour(4) + snapshotAt(5)
 ///   + energyLo/Hi + stabilityLo/Hi + creaturesLo/Hi(6)
@@ -152,9 +152,12 @@ enum PortalStatus {
 struct Portal {
     uint16 id;
     PortalType portalType;
-    uint16 nameIndex;
+    uint8 nameIndex; // index into the name pool (NAME_POOL_SIZE = 24)
     PortalStatus status;
     bool surveyed;
+    /// @dev True after a non-precise (Deaf) survey narrowed this portal; the
+    /// NEXT survey then reads exact values like a precise type.
+    bool narrowedOnce;
     bool observerInside;
     bool rescuerInside;
     bool surveyPending;
@@ -380,7 +383,6 @@ struct Config {
     uint32 closePressureBonus; // pressure added immediately when a portal is closed
     // survey / knowledge decay (SPEC §3.1)
     uint8 rangeWidenPerHour; // per game hour, each energy/stability bound drifts out
-    uint8 deafNarrowThreshold; // range width at which a deaf survey finally reads exact
     // spawn entropy (Ticket 4.5)
     /// @dev Length of a spawn epoch in game hours. One random word is pinned per
     /// epoch, so a player can predict spawns at most `epochHours` hours ahead and

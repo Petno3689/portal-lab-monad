@@ -61,7 +61,6 @@ contract DeployConfigTest is Test {
         assertEq(actual.spawnCostUnits, expected.spawnCostUnits, "spawnCostUnits");
         assertEq(actual.closePressureBonus, expected.closePressureBonus, "closePressureBonus");
         assertEq(actual.rangeWidenPerHour, expected.rangeWidenPerHour, "rangeWidenPerHour");
-        assertEq(actual.deafNarrowThreshold, expected.deafNarrowThreshold, "deafNarrowThreshold");
         assertEq(actual.epochHours, expected.epochHours, "epochHours");
         assertEq(actual.requestTimeoutHours, expected.requestTimeoutHours, "requestTimeoutHours");
     }

@@ -178,6 +178,9 @@ contract PortalLab is IRandomConsumer {
     mapping(address => Player) internal _players;
     /// @dev Permanent best-run record per address. Survives `startGame` resets.
     mapping(address => BestRun) private _bestRun;
+    /// @dev On-chain leaderboard: addresses of all players with at least one settled run.
+    /// Populated on the first settle of each player.
+    address[] private _leaderboard;
 
     /// @dev The pluggable source of randomness (SPEC §6). Pyth today, anything
     /// tomorrow — swapping it is a redeploy with a different address here, no
@@ -1213,8 +1216,10 @@ contract PortalLab is IRandomConsumer {
 
     /// @dev Write `g`'s result to `_bestRun[player]` and emit `RunSettled`.
     /// Called from both `settle` and the auto-settle path in `startGame`.
+    /// On first settle for a player, appends their address to `_leaderboard`.
     function _recordRun(address player, Game memory g) internal {
         BestRun storage best = _bestRun[player];
+        bool isFirstSettle = best.runsSettled == 0;
         uint32 hrs = g.diedAtHour;
         uint32 rescued = g.creaturesRescued;
         bool newBest = hrs > best.hoursSurvived
@@ -1226,12 +1231,45 @@ contract PortalLab is IRandomConsumer {
             best.settledAt = uint32(block.timestamp);
         }
         best.runsSettled += 1;
+        if (isFirstSettle) {
+            _leaderboard.push(player);
+        }
         emit RunSettled(player, hrs, rescued, newBest);
     }
 
     /// @notice The best-run record for `player` (`runsSettled == 0` means none yet).
     function bestRun(address player) external view returns (BestRun memory) {
         return _bestRun[player];
+    }
+
+    /// @notice The number of players with at least one settled run.
+    function leaderboardSize() external view returns (uint256) {
+        return _leaderboard.length;
+    }
+
+    /// @notice A slice of the leaderboard in insertion order.
+    /// @param offset Starting index (clamped to array length).
+    /// @param limit Number of entries to return (0 returns empty arrays).
+    /// @return players Addresses at indices [offset, offset+limit), clamped to array end.
+    /// @return runs Best-run records for each returned player.
+    function leaderboardPage(uint256 offset, uint256 limit)
+        external
+        view
+        returns (address[] memory players, BestRun[] memory runs)
+    {
+        uint256 size = _leaderboard.length;
+        if (limit == 0 || offset >= size) {
+            return (new address[](0), new BestRun[](0));
+        }
+        uint256 end = limit > size - offset ? size : offset + limit;
+        uint256 count = end - offset;
+        players = new address[](count);
+        runs = new BestRun[](count);
+        for (uint256 i = 0; i < count; i++) {
+            address player = _leaderboard[offset + i];
+            players[i] = player;
+            runs[i] = _bestRun[player];
+        }
     }
 
     /// @notice The world as of `block.timestamp` WITHOUT writing (SPEC §5). The

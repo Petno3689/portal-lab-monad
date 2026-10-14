@@ -13,7 +13,7 @@ import {
   type Address,
 } from 'viem';
 import { MONAD_RPC_URL, MONAD_CHAIN_ID, PORTAL_LAB_ADDRESS } from './config';
-import type { Portal, Game, Config, PortalTypeParams, Pending } from '@shared/types';
+import type { Portal, Game, Config, PortalTypeParams, Pending, BestRun } from '@shared/types';
 import ABI_JSON from './PortalLab.abi.json';
 
 export const portalLabAbi = (ABI_JSON as { abi: Abi }).abi;
@@ -112,6 +112,11 @@ export async function readPending(player: Address): Promise<Pending> {
   return toMirror<Pending>(raw);
 }
 
+export async function readBestRun(player: Address): Promise<BestRun> {
+  const raw = await publicClient.readContract({ ...lab, functionName: 'bestRun', args: [player] });
+  return toMirror<BestRun>(raw);
+}
+
 /** The fee for one random word: `randomSource()` on PortalLab, then `fee()` there. */
 export async function readFee(): Promise<bigint> {
   const source = (await publicClient.readContract({ ...lab, functionName: 'randomSource' })) as Address;
@@ -129,7 +134,7 @@ function walletClient(account: Address) {
 /** Send a PortalLab transaction from `account` and wait for its receipt. */
 export async function sendTx(
   account: Address,
-  functionName: 'startGame' | 'act' | 'sync' | 'settle',
+  functionName: 'startGame' | 'act' | 'sync' | 'settle' | 'cancelDeferred',
   args: readonly unknown[],
   value = 0n,
 ): Promise<`0x${string}`> {

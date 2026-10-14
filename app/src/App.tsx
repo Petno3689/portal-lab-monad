@@ -1,10 +1,10 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { formatEther, isAddress, type Address } from 'viem';
 import { MONAD_CHAIN_ID, MONAD_RPC_URL } from './config';
-import { readPlayer, readPending, readFee, readCanAct, sendTx, revertOf, type ChainState } from './contract';
+import { readPlayer, readPending, readFee, readCanAct, readBestRun, sendTx, revertOf, type ChainState } from './contract';
 import { preview } from '@shared/preview';
 import { Action, getRefusalMessage } from './types';
-import type { Pending } from '@shared/types';
+import type { Pending, BestRun } from '@shared/types';
 import './App.css';
 
 declare global {
@@ -37,6 +37,25 @@ const projectAt = (s: ChainState, nowTs: bigint) =>
     nowTs,
   );
 
+const DISCONNECTED_KEY = 'portal-lab:disconnected';
+
+function readDisconnected(): boolean {
+  try {
+    return window.localStorage.getItem(DISCONNECTED_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function writeDisconnected(on: boolean) {
+  try {
+    if (on) window.localStorage.setItem(DISCONNECTED_KEY, '1');
+    else window.localStorage.removeItem(DISCONNECTED_KEY);
+  } catch {
+    // storage unavailable: behave as "not disconnected"
+  }
+}
+
 const nowSec = () => BigInt(Math.floor(Date.now() / 1000));
 
 /** Refusals are warnings; failed transactions and anything unexpected are errors. */
@@ -45,6 +64,12 @@ function describeError(error: unknown): TransactionStatus {
   const fail = (text: string): TransactionStatus => ({ pending: false, message: '', error: text });
   if (r?.name === 'ActionRefused') {
     return { pending: false, message: '', warn: getRefusalMessage(Number(r.args[0])) };
+  }
+  if (r?.name === 'NoPendingAction') {
+    return { pending: false, message: '', warn: 'Nothing to cancel: the random word has just arrived' };
+  }
+  if (r?.name === 'RequestNotTimedOut') {
+    return { pending: false, message: '', warn: 'Too early to cancel this request' };
   }
   if (r?.name === 'ActionPending') return fail('Previous action is still waiting for the random word');
   if (r?.name === 'InsufficientFee') return fail(`Word fee too low: need ${formatEther(r.args[0] as bigint)} MON`);
@@ -64,14 +89,27 @@ function App() {
   // State as of the moment the deferral was observed, to tell a fresh game's first word from a plain sync.
   const stateRef = useRef<ChainState | null>(null);
   stateRef.current = state;
+  const [bestRun, setBestRun] = useState<BestRun | null>(null);
+  const [confirmNew, setConfirmNew] = useState(false);
+  // Mirrors the localStorage flag; read by the one-time accountsChanged listener.
+  const disconnected = useRef(readDisconnected());
+  // A cancellation must never be reported as a word delivery: the poll bails while
+  // one is in flight (`cancelling`) and when one finished since the poll started (`cancelEpoch`).
+  const cancelling = useRef(false);
+  const cancelEpoch = useRef(0);
 
   const player = account ?? urlPlayer;
 
   useEffect(() => {
     if (!window.ethereum) return;
-    window.ethereum.request({ method: 'eth_accounts' }).then((a: string[]) => a[0] && setAccount(a[0] as Address));
+    if (!disconnected.current) {
+      window.ethereum.request({ method: 'eth_accounts' }).then((a: string[]) => a[0] && setAccount(a[0] as Address));
+    }
     window.ethereum.request({ method: 'eth_chainId' }).then((id: string) => setChain(parseInt(id, 16)));
-    window.ethereum.on?.('accountsChanged', (a: string[]) => setAccount((a[0] as Address) ?? null));
+    window.ethereum.on?.('accountsChanged', (a: string[]) => {
+      if (disconnected.current) return;
+      setAccount((a[0] as Address) ?? null);
+    });
     window.ethereum.on?.('chainChanged', (id: string) => setChain(parseInt(id, 16)));
   }, []);
 
@@ -81,9 +119,27 @@ function App() {
       return;
     }
     const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+    disconnected.current = false;
+    writeDisconnected(false);
     setAccount(accounts[0]);
     const id = await window.ethereum.request({ method: 'eth_chainId' });
     setChain(parseInt(id as string, 16));
+  };
+
+  const disconnectWallet = async () => {
+    try {
+      await window.ethereum?.request({ method: 'wallet_revokePermissions', params: [{ eth_accounts: {} }] });
+    } catch {
+      // not every wallet supports revoking permissions
+    }
+    disconnected.current = true;
+    writeDisconnected(true);
+    setAccount(null);
+    setState(null);
+    setBestRun(null);
+    setConfirmNew(false);
+    setTxStatus({ pending: false, message: '' });
+    awaited.current = null;
   };
 
   const switchToMonad = async () => {
@@ -106,19 +162,24 @@ function App() {
     setChain(parseInt(id as string, 16));
   };
 
+  const refreshBestRun = useCallback((p: Address) => {
+    readBestRun(p).then(setBestRun).catch((error) => console.error('Failed to load best run:', error));
+  }, []);
+
   const load = useCallback(async () => {
     if (!player) return;
     setLoading(true);
     try {
       setState(await readPlayer(player));
       setNow(nowSec());
+      refreshBestRun(player);
     } catch (error) {
       console.error('Failed to load game state:', error);
       setTxStatus(describeError(error));
     } finally {
       setLoading(false);
     }
-  }, [player]);
+  }, [player, refreshBestRun]);
 
   useEffect(() => {
     load();
@@ -138,10 +199,13 @@ function App() {
   useEffect(() => {
     if (!pendingActive || !player) return;
     const id = setInterval(async () => {
+      const epoch = cancelEpoch.current;
+      const cancelled = () => cancelling.current || cancelEpoch.current !== epoch;
       try {
         const p = await readPending(player);
-        if (p.active) return;
+        if (p.active || cancelled()) return;
         const fresh = await readPlayer(player);
+        if (cancelled()) return;
         setState(fresh);
         setNow(nowSec());
         setTxStatus({ pending: false, message: resultMessage(awaited.current, fresh, stateRef.current) });
@@ -153,8 +217,15 @@ function App() {
     return () => clearInterval(id);
   }, [pendingActive, player]);
 
-  const send = async (label: string, fn: 'startGame' | 'act' | 'sync' | 'settle', args: readonly unknown[], value = 0n) => {
+  const send = async (
+    label: string,
+    fn: 'startGame' | 'act' | 'sync' | 'settle' | 'cancelDeferred',
+    args: readonly unknown[],
+    value = 0n,
+    doneMessage?: string,
+  ) => {
     if (!account) return;
+    setConfirmNew(false);
     setTxStatus({ pending: true, message: label });
     try {
       if (chain !== MONAD_CHAIN_ID) await switchToMonad();
@@ -162,11 +233,12 @@ function App() {
       const fresh = await readPlayer(account);
       setState(fresh);
       setNow(nowSec());
+      if (fn === 'settle' || fn === 'startGame') refreshBestRun(account);
       if (fresh.pending.active) {
         awaited.current = fresh.pending;
         setTxStatus({ pending: true, message: `${label}: waiting for the random word from Pyth (tx ${hash.slice(0, 10)}…)` });
       } else {
-        setTxStatus({ pending: false, message: `${label}: done (tx ${hash.slice(0, 10)}…)` });
+        setTxStatus({ pending: false, message: doneMessage ?? `${label}: done (tx ${hash.slice(0, 10)}…)` });
       }
     } catch (error) {
       console.error(error);
@@ -192,9 +264,29 @@ function App() {
     await send(`Action ${Action[action]} on slot ${slot}`, 'act', [slot, action], value);
   };
 
+  const cancelRequest = async () => {
+    if (!player) return;
+    cancelling.current = true;
+    cancelEpoch.current += 1;
+    awaited.current = null;
+    try {
+      await send('Cancel request', 'cancelDeferred', [player], 0n, 'Request cancelled');
+    } finally {
+      cancelling.current = false;
+      cancelEpoch.current += 1;
+    }
+  };
+
   const portalTypeNames = ['Flash', 'Long-lived', 'Deaf', 'Resonant', 'Energetic'];
   const game = projected?.game;
   const hasGame = !!game && game.startedAt !== 0n;
+  // Seconds until the pending request can be cancelled (contract: block.timestamp > committedAt + timeout).
+  const cancelWait =
+    state && state.pending.active
+      ? BigInt(state.pending.committedAt) + state.config.requestTimeoutHours * state.config.secPerHour - now + 1n
+      : 0n;
+  const openingLab = !!game && !game.finished && game.hoursElapsed === 0n && game.openPortals === 0n;
+  const openingWait = openingLab && game && state ? game.startedAt + state.config.secPerHour - now : 0n;
 
   return (
     <div className="app">
@@ -208,6 +300,7 @@ function App() {
           ) : (
             <>
               <span className="address">{account.slice(0, 6)}...{account.slice(-4)}</span>
+              <button onClick={disconnectWallet}>Disconnect</button>
               {chain !== MONAD_CHAIN_ID && (
                 <button onClick={switchToMonad} className="danger">
                   Switch to Monad Testnet
@@ -227,6 +320,18 @@ function App() {
           Waiting for the random word from Pyth: action {Action[state.pending.action]} on slot {String(state.pending.slot)}
           {state.pending.syncOnly ? ' (paid sync)' : ''}, request #{String(state.pending.requestId)}.
           Checking every {PENDING_POLL_MS / 1000} s…
+          <div>
+            {cancelWait > 0n ? (
+              <>Can be cancelled in {String(cancelWait)} s</>
+            ) : (
+              <>
+                <button onClick={cancelRequest} disabled={!account}>
+                  Cancel request
+                </button>{' '}
+                The Pyth fee is not refunded.
+              </>
+            )}
+          </div>
         </div>
       )}
 
@@ -276,23 +381,53 @@ function App() {
             </div>
           </div>
 
-          {projected.cappedShort && !game.finished && (
+          {openingLab && (openingWait > 0n || state?.pending.active) && (
+            <div className="info-message">
+              {openingWait <= 0n
+                ? 'Opening the lab — waiting for the random word'
+                : `Opening the lab — the first portals arrive in ${String(openingWait)} s`}
+            </div>
+          )}
+
+          {projected.cappedShort && !game.finished && !state?.pending.active && (
             <div className="info-message">
               The world is paused at hour {String(game.hoursElapsed)}. It needs a fresh random epoch word;
               any action will fetch one (Pyth fee).
             </div>
           )}
 
+          {game.finished ? (
+            <div className="run-over">
+              <h2>Run over</h2>
+              <p>Hours survived: {String(game.diedAtHour)}</p>
+              <p>Creatures rescued: {String(game.creaturesRescued)}</p>
+              <p>
+                {game.settled
+                  ? 'This run is recorded.'
+                  : 'This run is not recorded yet. Settle it, or start a new game: the finished run will be recorded automatically.'}
+              </p>
+              {bestRun && bestRun.settledAt !== 0n && (
+                <p>
+                  Best run: {String(bestRun.hoursSurvived)} hours, {String(bestRun.creaturesRescued)} creatures rescued
+                </p>
+              )}
+            </div>
+          ) : (
           <div className="portals-grid">
-            {projected.portals.map((portal, idx) => (
-              <div key={idx} className={`portal ${portal.status === 0 ? 'empty' : 'open'}`}>
+            {projected.portals.map((portal, idx) => {
+              const stored = state?.portals[idx];
+              const forming =
+                portal.status !== 0 && !!stored && (stored.status === 0 || stored.id !== portal.id);
+              return (
+              <div key={idx} className={`portal ${portal.status === 0 ? 'empty' : 'open'}${forming ? ' forming' : ''}`}>
                 <div className="portal-header">
                   <h3>Slot {idx}</h3>
                   {portal.status !== 0 && (
-                    <span className={`type`}>
+                    <span className={`type${forming ? ' muted' : ''}`}>
                       {portalTypeNames[portal.portalType] || 'Unknown'}
                     </span>
                   )}
+                  {forming && <span className="forming-badge">Forming</span>}
                 </div>
 
                 {portal.status === 0 ? (
@@ -306,8 +441,13 @@ function App() {
                       </div>
                       <div className="info-item">
                         <span>Hours to Collapse:</span>
-                        <span>{String(portal.hoursToCollapse)}</span>
+                        <span>{forming ? '—' : String(portal.hoursToCollapse)}</span>
                       </div>
+                      {forming && (
+                        <div className="info-item forming-note">
+                          Forming: it becomes real on the next transaction; its numbers may still change.
+                        </div>
+                      )}
                       {portal.surveyPending && <div className="info-item">Survey: waiting for the word…</div>}
                       {portal.rescuerPending && <div className="info-item">Blind entry: waiting for the word…</div>}
                       {portal.observerInside && <div className="info-item">Observer inside</div>}
@@ -366,12 +506,14 @@ function App() {
                   </>
                 )}
               </div>
-            ))}
+              );
+            })}
           </div>
+          )}
 
           <div className="game-controls">
             <button onClick={load}>Refresh</button>
-            {projected.cappedShort && !game.finished && (
+            {projected.cappedShort && !game.finished && !state?.pending.active && (
               <button
                 onClick={async () => {
                   if (!state) return;
@@ -388,10 +530,34 @@ function App() {
                 Settle Game
               </button>
             )}
-            <button onClick={async () => send('New game', 'startGame', [], await readFee())} className="secondary" disabled={!account}>
+            <button
+              onClick={async () => {
+                if (game.finished) await send('New game', 'startGame', [], await readFee());
+                else setConfirmNew(true);
+              }}
+              className="secondary"
+              disabled={!account}
+            >
               New Game
             </button>
           </div>
+          {confirmNew && !game.finished && (
+            <div className="warn-message">
+              <p>
+                This run is still alive. Starting a new game forfeits it WITHOUT recording it on the leaderboard.
+              </p>
+              <button
+                onClick={async () => {
+                  setConfirmNew(false);
+                  await send('New game', 'startGame', [], await readFee());
+                }}
+                className="danger"
+              >
+                Forfeit and start new
+              </button>{' '}
+              <button onClick={() => setConfirmNew(false)}>Keep playing</button>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -402,6 +568,9 @@ function resultMessage(done: Pending | null, s: ChainState, before: ChainState |
   if (!done) return 'Random word received, state updated';
   if (done.syncOnly && before && before.game.hoursElapsed === 0n && before.game.openPortals === 0n && s.game.openPortals > 0n) {
     return `Lab ready: hour ${s.game.hoursElapsed}, ${s.game.openPortals} portals`;
+  }
+  if (done.syncOnly && s.game.hoursElapsed === 0n && s.game.openPortals === 0n) {
+    return 'Random word received — the first portals arrive at hour 1';
   }
   if (done.syncOnly) return `Sync complete: world at hour ${s.game.hoursElapsed}`;
   const slot = Number(done.slot);

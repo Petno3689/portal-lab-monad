@@ -255,3 +255,30 @@ button.danger:hover {
 .game-controls button {
   padding: 0.75rem 1.5rem;
 }
+
+.run-over {
+  text-align: center;
+  padding: 1.5rem;
+  border: 1px solid #5a2a2a;
+  border-radius: 8px;
+  margin: 1rem 0;
+}
+
+.portal.forming .type,
+.portal.forming .portal-info .info-item:not(.forming-note) {
+  opacity: 0.55;
+}
+
+.forming-badge {
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 0.75em;
+  background: #6b5b00;
+  color: #ffe58a;
+}
+
+.forming-note {
+  font-size: 0.85em;
+  font-style: italic;
+}

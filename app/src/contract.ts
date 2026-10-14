@@ -174,3 +174,28 @@ export function revertOf(error: unknown): { name: string; args: readonly unknown
   }
   return null;
 }
+
+export async function blockOf(hash: `0x${string}`): Promise<bigint> {
+  return (await publicClient.getTransactionReceipt({ hash })).blockNumber;
+}
+
+/** What the contract emitted for this player's deferred action in `slot`, from `fromBlock` to the latest block. */
+export async function readDeferredOutcome(
+  player: Address,
+  slot: number,
+  action: number,
+  fromBlock: bigint,
+): Promise<{ cancelledReason: number | null; performed: boolean }> {
+  const range = { fromBlock, toBlock: 'latest' as const, args: { player } };
+  const [cancels, performs] = await Promise.all([
+    publicClient.getContractEvents({ ...lab, eventName: 'DeferredActionCancelled', ...range }),
+    publicClient.getContractEvents({ ...lab, eventName: 'ActionPerformed', ...range }),
+  ]);
+  const match = (l: { args: unknown }) => {
+    const a = l.args as { slot?: number; action?: number };
+    return Number(a.slot) === slot && Number(a.action) === action;
+  };
+  const cancel = cancels.filter(match).at(-1);
+  if (cancel) return { cancelledReason: Number((cancel.args as { reason: number }).reason), performed: false };
+  return { cancelledReason: null, performed: performs.some(match) };
+}

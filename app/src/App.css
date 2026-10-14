@@ -264,21 +264,29 @@ button.danger:hover {
   margin: 1rem 0;
 }
 
-.portal.forming .type,
-.portal.forming .portal-info .info-item:not(.forming-note) {
-  opacity: 0.55;
+.run-over h2 {
+  color: #ffb4b4;
 }
 
-.forming-badge {
-  margin-left: 8px;
-  padding: 2px 8px;
-  border-radius: 10px;
-  font-size: 0.75em;
-  background: #6b5b00;
-  color: #ffe58a;
+.forecast {
+  margin: 1rem 0;
+  padding: 0.75rem 1rem;
+  border: 1px solid #3a4a6a;
+  border-radius: 8px;
+  font-size: 0.9em;
 }
 
-.forming-note {
-  font-size: 0.85em;
-  font-style: italic;
+.forecast h3 {
+  margin: 0 0 0.5rem;
+  font-size: 1em;
+}
+
+.forecast ul {
+  margin: 0.25rem 0;
+  padding-left: 1.2rem;
+}
+
+.forecast-death {
+  color: #ff8a8a;
+  font-weight: 600;
 }

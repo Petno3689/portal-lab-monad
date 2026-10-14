@@ -45,7 +45,6 @@ library GameConfig {
         // spawns — pressure measured in units; one portal costs spawnCostUnits units.
         // A fresh lab accrues ~one portal's worth of pressure per ten game hours,
         // the ramp speeds that up over the run, and closing grants 1/4 of a portal.
-        c.maxSpawnsPerTx = 3;
         c.basePressurePerHour = 1000;
         c.pressureRampPerHour = 1;
         c.spawnCostUnits = 10_000;

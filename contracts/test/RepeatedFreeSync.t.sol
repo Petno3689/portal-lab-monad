@@ -2,46 +2,53 @@
 pragma solidity 0.8.28;
 
 import {Test} from "forge-std/Test.sol";
-import {Game, Config} from "../src/PortalLabTypes.sol";
+import {Game, Portal, Config, MAX_OPEN_PORTALS} from "../src/PortalLabTypes.sol";
 import {PortalLabHarness} from "./utils/PortalLabHarness.sol";
 import {DefaultConfig} from "./utils/DefaultConfig.sol";
 
-/// @title RepeatedFreeSyncTest — repeated free syncs create no extra portals.
-///                               The hole itself is NOT closed. READ THIS FIRST.
+/// @title RepeatedFreeSyncTest — outside free syncs change nothing. The hole is
+///                               CLOSED. READ THIS FIRST.
 ///
-///  * What the fix removed: catch-up spends spawn debt only when the world
-///    actually advanced (`hWalkEnd > windowStart` in TimeLib step 5). Repeated
-///    calls in one moment no longer multiply spawns: six equal one, byte for
-///    byte (sections 2 and 5).
-///  * What the fix did NOT remove: ONE outside sync, at an hour the outsider
-///    picks, can still kill a run that would have survived without it. This is
-///    an OPEN VULNERABILITY. Section 6 shows it with lethal numbers.
-///  * The real mechanism: a portal's birth hour is `hWalkEnd`, i.e. the moment
-///    somebody happened to call — not a function of time. Whoever chooses the
-///    call moment chooses when portals are born; three portals born early have
-///    time to collapse, and every collapse costs HP. While this holds, the
-///    world is not a function of the pair (state, now).
-///  * The question is OPEN. No decision on a real repair has been taken. Do not
-///    read the passing tests below as "handled".
+///  * The hole. `sync(player)` is free, unauthenticated, and open to anyone. A
+///    portal used to be born at `hWalkEnd` — the hour of whatever call happened
+///    to age the world — so whoever chose the call moment chose when portals were
+///    born. Portals born ahead of schedule had time to collapse, and every
+///    collapse costs HP: ONE outside call at a chosen hour could kill a run that
+///    would otherwise have survived (measured by the reviewer on the second stand
+///    below: in 17 of 30 pairs the run was alive without the call and dead with
+///    it; in the other 13 it died earlier with it).
+///  * Why it is closed. A portal's birth hour is now a function of time and state
+///    alone: the k-th portal of a window is born at the first hour its pressure
+///    matures (`debt0 + spawnPressure(h0, h) >= k * spawnCostUnits`) with a slot
+///    free — never at the hour of a call. Every event hour (collapses and births)
+///    therefore follows from the stored snapshot and the clock, and a catch-up to
+///    `c` leaves the same world whether or not anyone called at some `b` in
+///    between. An outside call is just an observation.
+///  * What this file pins. Every scenario compares the world WITH the outside
+///    call(s) against the world WITHOUT them, byte for byte (game and all twelve
+///    portals). The generic proof over many states and every intermediate second
+///    is BirthAtMaturity.t.sol; this file keeps the original stands and the
+///    pinned word, so the finding and its repair can be read side by side.
 ///
-/// History of the finding, kept deliberately. `sync(player)` is free,
-/// unauthenticated, and does not require the world to have moved. Before the
-/// fix, with no new hours elapsed no new pressure accrued, yet step 5 still
-/// spent the ALREADY ACCRUED debt on portals. `maxSpawnsPerTx` caps one CALL,
-/// not a moment in time, so several calls in one block converted a victim's
-/// whole debt into portals ahead of schedule. Measured then: six stranger syncs
-/// at hour 113 opened 11 portals instead of 3 and moved the victim's death
-/// from hour 134 to hour 123. The first fixture below is the one that finding
-/// was measured on. Under the fix the same six syncs open 3 portals and the
-/// death moves from 134 only to 135 — but that gentle number is an artifact of
-/// that fixture, not a bound on the damage (section 6).
+/// History, kept deliberately. Before any fix, repeated calls in ONE block spent a
+/// victim's already accrued debt on portals ahead of schedule (a per-call spawn
+/// cap, `maxSpawnsPerTx`, capped a call, not a moment): six stranger syncs at hour
+/// 113 opened 11 portals instead of 3 and moved the death from hour 134 to 123. A
+/// first fix made repeats in one moment useless but left the single outside call
+/// lethal (section 6 as it then stood). The per-call cap is gone now; births are
+/// not tied to calls at all.
 ///
-/// If a test here fails, the fix was weakened or the rule was changed. Do not
-/// update the numbers to match; find out which.
+/// The numbers changed with the rule, and not only because the hole closed: an
+/// abandoned lab now really fills — portals are born at maturity during the
+/// absence and collapse — so the first stand, untouched, dies at hour 57 rather
+/// than at the old analytic hour 134.
+///
+/// If a test here fails, the world again depends on WHEN someone calls. Do not
+/// update the numbers to match; find out why.
 ///
 /// Fixture: stand configuration (GameConfig defaults), player with hp 100, full
 /// crew and full power, empty lab, a word already issued with 100 covered
-/// epochs, game started at BASE. Numbers were measured by the reviewer.
+/// epochs, game started at BASE.
 contract RepeatedFreeSyncTest is Test {
     PortalLabHarness internal harness;
     address internal player;
@@ -49,6 +56,11 @@ contract RepeatedFreeSyncTest is Test {
 
     uint40 internal constant BASE = 1000;
     uint32 internal SPH;
+
+    struct World {
+        Game g;
+        Portal[MAX_OPEN_PORTALS] p;
+    }
 
     function setUp() public {
         harness = new PortalLabHarness();
@@ -83,25 +95,47 @@ contract RepeatedFreeSyncTest is Test {
         return harness.getGame(player);
     }
 
+    function _world() internal view returns (World memory w) {
+        w.g = harness.getGame(player);
+        w.p = harness.getPortals(player);
+    }
+
+    function _assertSameWorld(World memory a, World memory b, string memory what) internal pure {
+        assertEq(abi.encode(a.g), abi.encode(b.g), string.concat(what, ": game"));
+        for (uint256 s = 0; s < MAX_OPEN_PORTALS; s++) {
+            assertEq(abi.encode(a.p[s]), abi.encode(b.p[s]), string.concat(what, ": portal"));
+        }
+    }
+
     // ── 1. one free sync after a 113-hour absence ────────────────────────────
 
-    function test_OneFreeSyncAfter113HoursOpensThreePortals() public {
+    /// The abandoned lab filled and died long before the call: five portals were
+    /// born at their maturity hours (10, 20, 30, …), newborns collapsed, and the
+    /// run ended at hour 57. Debt at death: P(0,57) = 58_596, less 5 * 10_000.
+    function test_OneFreeSyncAfter113Hours() public {
         _warpHours(113);
         harness.sync(player);
         Game memory g = _game();
-        assertEq(uint256(g.openPortals), 3, "one sync: capped at maxSpawnsPerTx");
-        assertEq(uint256(g.spawnDebt), 89_328, "one sync: debt left");
-        assertEq(uint256(g.hp), 100, "one sync: hp");
-        assertFalse(g.finished, "one sync: alive");
+        assertTrue(g.finished, "one sync: the abandoned lab is dead");
+        assertEq(uint256(g.diedAtHour), 57, "one sync: died at hour 57");
+        assertEq(uint256(g.spawnCount), 5, "one sync: five births");
+        assertEq(uint256(g.openPortals), 2, "one sync: portals open at death");
+        assertEq(uint256(g.spawnDebt), 8_596, "one sync: debt at the death hour");
+        assertEq(uint256(g.hp), 0, "one sync: hp");
     }
 
     // ── 2. six free syncs, one block, a non-player address ───────────────────
 
-    function test_SixFreeSyncsInOneBlockFromStrangerOpenOnlyThreePortals() public {
+    function test_SixFreeSyncsInOneBlockFromStrangerEqualOne() public {
+        uint256 snap = vm.snapshotState();
+        _warpHours(113);
+        harness.sync(player);
+        World memory one = _world();
+        vm.revertToState(snap);
+
         _warpHours(113);
         uint256 ts = vm.getBlockTimestamp();
         assertTrue(stranger != player, "caller is not the player");
-
         vm.startPrank(stranger);
         for (uint256 i = 0; i < 6; i++) {
             harness.sync(player);
@@ -109,28 +143,21 @@ contract RepeatedFreeSyncTest is Test {
         }
         vm.stopPrank();
 
-        Game memory g = _game();
-        assertEq(vm.getBlockTimestamp(), ts, "same block timestamp throughout");
-        // Identical to ONE sync (section 1): the five repeats moved no hour and
-        // spent nothing.
-        assertEq(uint256(g.openPortals), 3, "six syncs: same as one sync");
-        assertEq(uint256(g.spawnDebt), 89_328, "six syncs: debt not spent by repeats");
-        assertEq(uint256(g.hp), 100, "six syncs: hp not yet touched");
-        assertFalse(g.finished, "six syncs: alive");
+        _assertSameWorld(_world(), one, "six syncs == one sync");
     }
 
-    // ── 3. the finding, under the fix: same time, nearly the same death ──────
+    // ── 3. the original finding: same time, same world ───────────────────────
 
     /// Scenario A — nobody interferes; the player syncs at hour 153.
-    function _scenarioA() internal returns (Game memory) {
+    function _scenarioA() internal returns (World memory) {
         _warpHours(153);
         harness.sync(player);
-        return _game();
+        return _world();
     }
 
     /// Scenario B — a stranger syncs six times at hour 113; the player syncs at
     /// hour 153. The total passage of time is IDENTICAL to A.
-    function _scenarioB() internal returns (Game memory) {
+    function _scenarioB() internal returns (World memory) {
         _warpHours(113);
         vm.startPrank(stranger);
         for (uint256 i = 0; i < 6; i++) {
@@ -139,49 +166,33 @@ contract RepeatedFreeSyncTest is Test {
         vm.stopPrank();
         _warpHours(153);
         harness.sync(player);
-        return _game();
+        return _world();
     }
 
     function test_ScenarioA_NobodyInterferes() public {
-        Game memory g = _scenarioA();
+        Game memory g = _scenarioA().g;
         assertTrue(g.finished, "A: dead by hour 153");
-        assertEq(uint256(g.openPortals), 3, "A: portals open");
-        assertEq(uint256(g.spawnDebt), 134_628, "A: debt");
-        assertEq(uint256(g.diedAtHour), 134, "A: died at hour 134");
+        assertEq(uint256(g.diedAtHour), 57, "A: died at hour 57");
+        assertEq(uint256(g.openPortals), 2, "A: portals open at death");
+        assertEq(uint256(g.spawnDebt), 8_596, "A: debt at the death hour");
     }
 
-    function test_ScenarioB_StrangerSyncsSixTimesAtHour113() public {
-        Game memory g = _scenarioB();
-        assertTrue(g.finished, "B: dead by hour 153");
-        assertEq(uint256(g.openPortals), 0, "B: portals open");
-        assertEq(uint256(g.spawnDebt), 89_328, "B: debt");
-        assertEq(uint256(g.diedAtHour), 135, "B: died at hour 135");
-    }
-
-    /// The finding, re-checked: the same victim, the same elapsed time, the
-    /// same final sync. Before the fix six outside calls moved the death from
-    /// hour 134 to hour 123; now the five repeats do nothing and only the first
-    /// call remains. This shows that REPEATS no longer multiply — it does not
-    /// show the hole is closed; see section 6.
-    function test_RepeatedStrangerSyncsNoLongerMultiply_OnThisFixture() public {
+    function test_ScenarioB_EqualsScenarioA() public {
         uint256 snap = vm.snapshotState();
-        uint32 deathA = _scenarioA().diedAtHour;
+        World memory a = _scenarioA();
         vm.revertToState(snap);
-        uint32 deathB = _scenarioB().diedAtHour;
-
-        assertEq(uint256(deathA), 134, "without interference: hour 134");
-        assertEq(uint256(deathB), 135, "with six outside syncs: hour 135");
-        assertGe(uint256(deathB), uint256(deathA), "on this fixture the repeats cost no extra hours");
+        World memory b = _scenarioB();
+        _assertSameWorld(b, a, "six outside syncs at hour 113 change nothing");
     }
 
-    // ── 4. 200-hour absence: the boundary beyond which influence is impossible ─
+    // ── 4. 200-hour absence: repeats after the end are no-ops ────────────────
 
     function test_200HourAbsenceFirstSyncEndsGameAndRepeatsAreNoOps() public {
         _warpHours(200);
         harness.sync(player);
-        Game memory first = _game();
-        assertTrue(first.finished, "first sync ends the game (section 5.5)");
-        assertEq(uint256(first.diedAtHour), 134, "died at hour 134");
+        World memory first = _world();
+        assertTrue(first.g.finished, "first sync ends the game");
+        assertEq(uint256(first.g.diedAtHour), 57, "died at hour 57");
 
         vm.startPrank(stranger);
         for (uint256 i = 0; i < 6; i++) {
@@ -189,21 +200,14 @@ contract RepeatedFreeSyncTest is Test {
         }
         vm.stopPrank();
 
-        Game memory after_ = _game();
-        assertEq(abi.encode(after_), abi.encode(first), "repeated syncs change nothing");
+        _assertSameWorld(_world(), first, "repeated syncs change nothing");
     }
 
-    // ── 5. residual influence: one outside sync ─────────────────────────────
+    // ── 5. one outside sync == six == none ───────────────────────────────────
 
-    /// A stranger syncs ONCE at hour 113; the player syncs once at hour 153.
-    /// The outcome differs from the untouched run (scenario A): the influence
-    /// remains. What this test pins is that repeats are useless — one outside
-    /// sync is byte-for-byte equal to six, so the influence cannot grow back
-    /// into several calls' worth unnoticed. How lethal the remaining single
-    /// call can be is shown by the separate test in section 6.
-    function test_OneOutsideSyncEqualsSix_RepeatsAreUseless() public {
+    function test_OneOutsideSyncEqualsSixEqualsNone() public {
         uint256 snap = vm.snapshotState();
-        Game memory untouched = _scenarioA();
+        World memory untouched = _scenarioA();
         vm.revertToState(snap);
 
         _warpHours(113);
@@ -211,24 +215,19 @@ contract RepeatedFreeSyncTest is Test {
         harness.sync(player);
         _warpHours(153);
         harness.sync(player);
-        Game memory touched = _game();
+        World memory touched = _world();
+        _assertSameWorld(touched, untouched, "one outside sync == none");
 
-        assertEq(uint256(untouched.diedAtHour), 134, "untouched: hour 134");
-        assertTrue(touched.finished, "touched: dead by hour 153");
-        assertEq(uint256(touched.diedAtHour), 135, "touched: hour 135, one later than untouched");
-        assertTrue(keccak256(abi.encode(touched)) != keccak256(abi.encode(untouched)), "one outside sync does change the outcome");
-
-        // And it is exactly what six outside syncs produce: repeats add nothing.
         vm.revertToState(snap);
-        Game memory six = _scenarioB();
-        assertEq(abi.encode(touched), abi.encode(six), "one outside sync == six outside syncs");
+        _assertSameWorld(_scenarioB(), touched, "six outside syncs == one");
     }
 
-    // ── 6. the open hole: one outside sync at a chosen hour is lethal ────────
+    // ── 6. the former open hole: one outside sync at a chosen hour ───────────
 
     /// Second stand, values the game itself produces: hp 50 (what startGame
     /// gives), power 50, 3 observers, 2 rescuers, empty lab, word issued,
-    /// 12 covered epochs, started at BASE.
+    /// 12 covered epochs, started at BASE. The word stays pinned: it decides the
+    /// types of the portals that drop and, through them, when they collapse.
     function _seedLethalStand() internal {
         Game memory g;
         g.startedAt = BASE;
@@ -241,46 +240,22 @@ contract RepeatedFreeSyncTest is Test {
         harness.setCoverage(player, uint256(keccak256("repeated-free-sync")), 12);
     }
 
-    /// OPEN VULNERABILITY — this is not permitted behaviour. The decision on a
-    /// real repair has not been taken.
-    ///
-    /// One free call by an outsider harms the player in EVERY pair checked, and
-    /// in most of them it takes the whole run away. The reviewer swept a grid of
-    /// 30 pairs (absence / hour of the player's own sync) on this stand with
-    /// this word: in 17 of 30 the run is alive without the call and dead with
-    /// one; in the other 13 the run dies either way, but EARLIER with the call.
-    /// No pair was found where the outside call is harmless.
-    ///
-    /// The two pairs below are typical representatives, not exceptions. The
-    /// player would never choose hour 20 (or 60) for an interaction; the
-    /// attacker chooses exactly that, because a portal is born at hWalkEnd, the
-    /// hour of the call. Three portals that appeared ahead of schedule have time
-    /// to collapse, and every collapse costs HP.
-    ///
-    /// The concrete death hour depends on the epoch's word: the word decides
-    /// the types of the portals that drop and, through them, the hours at which
-    /// they collapse. That is why the stand pins the word explicitly; do not
-    /// change it without re-measuring the numbers.
-    ///
-    /// This test exists so the hole is visible in the code and not only in a
-    /// conversation. When it is truly repaired, this test is expected to fail,
-    /// and that failure is the signal to rewrite it.
-    ///
-    /// Each case asserts BOTH outcomes separately, so the test shows what
-    /// exactly changed: without the call the run is alive; with one call it is
-    /// finished, at the stated hour.
-    function _outsideCallKills(uint256 outsideHour, uint256 finalHour, uint32 deathHour, uint8 openAtDeath) internal {
+    /// The outcome with one outside call at `outsideHour` EQUALS the outcome
+    /// without it — game and all twelve portals — whatever that outcome is. These
+    /// were the two lethal representatives of the reviewer's 30-pair sweep; a
+    /// third, earlier pair is added where the run is still alive at the final
+    /// sync. `wantFinished` / `wantDeathHour` document what the stand does now;
+    /// the equality is the point.
+    function _outsideCallChangesNothing(uint256 outsideHour, uint256 finalHour, bool wantFinished, uint32 wantDeathHour)
+        internal
+    {
         _seedLethalStand();
         uint256 snap = vm.snapshotState();
 
         // No interference: the player syncs once at finalHour.
         _warpHours(finalHour);
         harness.sync(player);
-        Game memory clean = _game();
-        assertFalse(clean.finished, "no outside call: run is not over");
-        assertEq(uint256(clean.openPortals), 3, "no outside call: 3 portals open");
-        assertEq(uint256(clean.hp), 50, "no outside call: hp untouched");
-        assertEq(uint256(clean.hoursElapsed), finalHour, "no outside call: hours lived");
+        World memory clean = _world();
 
         // One outside call at outsideHour, then the player at finalHour.
         vm.revertToState(snap);
@@ -289,18 +264,22 @@ contract RepeatedFreeSyncTest is Test {
         harness.sync(player);
         _warpHours(finalHour);
         harness.sync(player);
-        Game memory hit = _game();
-        assertTrue(hit.finished, "one outside call: run is over");
-        assertEq(uint256(hit.diedAtHour), uint256(deathHour), "one outside call: death hour");
-        assertEq(uint256(hit.hp), 0, "one outside call: hp");
-        assertEq(uint256(hit.openPortals), uint256(openAtDeath), "one outside call: portals open at death");
+        World memory hit = _world();
+
+        _assertSameWorld(hit, clean, "one outside call changes nothing");
+        assertEq(clean.g.finished, wantFinished, "outcome: finished");
+        assertEq(uint256(clean.g.diedAtHour), uint256(wantDeathHour), "outcome: death hour");
     }
 
-    function test_OPEN_HOLE_OneOutsideSyncAtHour20KillsRunThatWouldSurvive() public {
-        _outsideCallKills(20, 60, 50, 0);
+    function test_HOLE_CLOSED_OneOutsideSyncAtHour20ChangesNothing() public {
+        _outsideCallChangesNothing(20, 60, true, 50);
     }
 
-    function test_OPEN_HOLE_OneOutsideSyncAtHour60KillsRunThatWouldSurvive() public {
-        _outsideCallKills(60, 120, 89, 1);
+    function test_HOLE_CLOSED_OneOutsideSyncAtHour60ChangesNothing() public {
+        _outsideCallChangesNothing(60, 120, true, 50);
+    }
+
+    function test_HOLE_CLOSED_OneOutsideSyncAtHour5ChangesNothing_RunAlive() public {
+        _outsideCallChangesNothing(5, 20, false, 0);
     }
 }

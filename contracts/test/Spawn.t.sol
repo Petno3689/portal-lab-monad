@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {Test} from "forge-std/Test.sol";
+import {Test, Vm} from "forge-std/Test.sol";
 import {PortalLab} from "../src/PortalLab.sol";
 import {Game, Portal, PortalType, PortalTypeParams, PortalStatus, Action, SPAWN_DEBT_MAX} from "../src/PortalLabTypes.sol";
 import {TimeLib} from "../src/TimeLib.sol";
@@ -123,47 +123,71 @@ contract SpawnTest is Test {
         assertGt(secondHundred, firstHundred, "later hours accrue more pressure");
     }
 
-    // ── Group 4: Per-transaction cap ──────────────────────────────────────────
+    // ── Group 4: Portals are born at maturity, not at the call ───────────────
 
-    function test_PerTxCapHoldsAndRemainderKept() public {
-        harness.setGame(player, _g()); // empty lab
+    /// One call after 25 hours: the k-th portal is born at the first hour the
+    /// pressure reaches k * spawnCostUnits — hours 10 and 20 — not at hour 25,
+    /// and there is no per-call cap. P(0,10) = 10_045, P(0,20) = 20_190,
+    /// P(0,25) = 25_300, so 5_300 is left over.
+    function test_BirthsHappenAtMaturity() public {
+        harness.setGame(player, _g()); // empty lab, spawnDebt 0
 
-        // P(0,100) = 104_950 ≈ 10 portals, well under 12*cost = 120_000 (no fill).
-        _warpHours(100);
+        _warpHours(25);
+        vm.recordLogs();
+        harness.sync(player);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+
+        uint256[2] memory want = [uint256(10), 20];
+        uint256 n;
+        for (uint256 k = 0; k < logs.length; k++) {
+            if (logs[k].topics[0] != PortalLab.PortalSpawned.selector) continue;
+            (,, uint32 atHour) = abi.decode(logs[k].data, (PortalType, uint16, uint32));
+            assertLt(n, 2, "only two portals matured");
+            assertEq(uint256(atHour), want[n], "born at the hour its pressure matured");
+            n += 1;
+        }
+        assertEq(n, 2, "two births");
+        assertEq(_game_().spawnCount, 2, "two counted");
+        assertEq(_game_().spawnDebt, 25_300 - 20_000, "the remainder stays in the debt");
+    }
+
+    /// The `>=` of the maturity rule, pinned at equality: 4_990 + P(0,5) = 4_990 +
+    /// 5_010 = 10_000 exactly, so the portal is born at hour 5, not hour 6.
+    function test_BirthAtExactMaturityBoundary() public {
+        Game memory g = _g();
+        g.spawnDebt = 4990;
+        harness.setGame(player, g);
+
+        _warpHours(8);
+        harness.sync(player);
+        assertEq(_game_().spawnCount, 1, "one birth");
+        assertEq(_portal_(0).spawnedAtHour, 5, "born exactly when A(h) == spawnCostUnits");
+    }
+
+    // ── Group 5: A matured birth waits for a full lab to free a slot ──────────
+
+    /// Twelve open, one portal's worth of debt already matured at hour 0. The
+    /// birth waits for the first collapse (slot 0, hour 12) and happens AT that
+    /// collapse; the next portal matures at hour 10 (10_000 + P(0,10) >= 20_000)
+    /// but finds the lab full again and keeps waiting. HP: overflow 12 h * 5 =
+    /// 60, the empty collapse 3, overflow again 3 h * 5 = 15 → 100 - 78 = 22.
+    function test_MaturedBirthWaitsForFullLab() public {
+        _fillTwelve(100, 10_000);
+        Portal memory first = _p();
+        first.hoursToCollapse = 12; // empty, surveyed: costs hpEmptyCollapse (3)
+        harness.setPortal(player, 0, first);
+
+        _warpHours(15);
         harness.sync(player);
 
-        assertEq(_game_().openPortals, 3, "capped at maxSpawnsPerTx");
-        assertEq(_game_().spawnCount, 3, "three counted");
-        assertEq(_game_().spawnDebt, 104_950 - 30_000, "remainder saved");
+        assertEq(_game_().spawnCount, 1, "exactly one birth: the lab filled again");
+        assertEq(_portal_(0).spawnedAtHour, 12, "born at the collapse that freed the slot");
+        assertEq(_portal_(0).id, 1, "the newborn took the freed slot");
+        assertEq(_game_().openPortals, 12, "full again");
+        // 10_000 + P(0,15) - 10_000 = P(0,15) = 15_000 + (14*15)/2 = 15_105.
+        assertEq(_game_().spawnDebt, 15_105, "the second portal's pressure keeps waiting");
+        assertEq(_game_().hp, 22, "overflow, collapse, overflow");
     }
-
-    // ── Group 5: The remainder is spent over later advances of the world ──────
-
-    function test_RemainderIsSpentOverLaterWorldAdvances() public {
-        harness.setGame(player, _g());
-
-        _warpHours(100);
-        harness.sync(player); // open 3, debt 74_950
-
-        // The remainder drains only as the world moves: one game hour per sync.
-        // `sync` is free and open to anyone, so a call that did not advance the
-        // world may not spend debt — otherwise anyone could pour someone else's
-        // debt into portals by repeating calls in one block.
-        // Each hour h adds P(h,h+1) = 1000 + h fresh pressure:
-        //   h100: 74_950 + 1_100 = 76_050 → +3 (46_050)
-        //   h101: 46_050 + 1_101 = 47_151 → +3 (17_151)
-        //   h102: 17_151 + 1_102 = 18_253 → +1 ( 8_253)
-        //   h103:  8_253 + 1_103 =  9_356 → +0
-        // Nothing collapses: the shortest type lives hoursMin(5) hours.
-        for (uint40 h = 101; h <= 104; h++) {
-            _warpHours(h);
-            harness.sync(player);
-        }
-
-        assertEq(_game_().openPortals, 10, "3+3+3+1 = 10");
-        assertEq(_game_().spawnDebt, 9_356, "below one portal cost: nothing more to spend");
-    }
-
     // ── Group 6: The lab cap blocks spawns and spends nothing ─────────────────
 
     function _fillTwelve(uint16 hp, uint32 debt) internal {
@@ -308,22 +332,30 @@ contract SpawnTest is Test {
         _warpHours(10_000);
         harness.sync(player);
 
-        // needed = 12*10_000 = 120_000; fill hour = 114 (first hh with
-        // P(0,hh) >= 120_000). Death = 114 + ceil(100/5) = 134.
+        // The abandoned lab is walked event by event: portals are born at their
+        // maturity hours (10, 20, 30, 40, 49 — P(0,49) = 50_176 >= 50_000) and
+        // newborns collapse (hours 16, 34, 57 under this harness word, costing
+        // 40 + 40 + 20 hp). The third collapse kills at hour 57 — long before the
+        // lab could ever fill (the old analytic fill-and-overflow put death at 134).
         assertTrue(_game_().finished, "game over");
-        assertEq(_game_().diedAtHour, 134, "analytic death hour");
+        assertEq(_game_().diedAtHour, 57, "death at the hour of the lethal collapse");
         assertLt(_game_().diedAtHour, 10_000, "far short of the pause");
         assertEq(_game_().hp, 0, "hp zeroed");
-        assertLe(_game_().openPortals, 3, "no more than maxSpawnsPerTx real portals");
-        assertEq(_game_().spawnCount, 3, "three real portals materialised");
+        assertEq(_game_().openPortals, 2, "portals open at death");
+        assertEq(_game_().spawnCount, 5, "every portal that matured before death was born");
     }
 
     // ── Group 12: hFill is found exactly ──────────────────────────────────────
+    //
+    // The analytic fill hour now lives only BEYOND the pinned edge, where the
+    // world cannot be walked (no word, no births) yet the abandoned lab still
+    // overflows. Nothing is pinned here, so the whole window is beyond the edge.
 
     function test_FillHourIsExact() public {
         Game memory g = _g();
         g.hp = 60; // ceil(60/5) = 12 overflow hours to death
         harness.setGame(player, g);
+        harness.setCoverage(player, harness.epochWordOf(player), 0); // nothing pinned
 
         _warpHours(200);
         harness.sync(player);
@@ -436,6 +468,7 @@ contract SpawnTest is Test {
         g.hp = 60; // ceil(60/5) = 12 overflow hours to death
         g.spawnDebt = 672;
         harness.setGame(player, g);
+        harness.setCoverage(player, harness.epochWordOf(player), 0); // nothing pinned: beyond the edge
 
         _warpHours(200);
         harness.sync(player);

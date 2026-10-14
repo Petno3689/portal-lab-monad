@@ -40,7 +40,6 @@ contract DeployScript is Script {
         console.log("  hpStart        =", cfg.hpStart);
         console.log("  hpMax          =", cfg.hpMax);
         console.log("  secPerHour     =", cfg.secPerHour);
-        console.log("  maxSpawnsPerTx =", cfg.maxSpawnsPerTx);
 
         vm.startBroadcast();
         // The randomness source is a separate contract (Ticket 4.4 §1.3): the only

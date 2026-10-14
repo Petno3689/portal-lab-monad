@@ -56,7 +56,6 @@ contract DeployConfigTest is Test {
         assertEq(actual.rescuerCooldownHours, expected.rescuerCooldownHours, "rescuerCooldownHours");
         assertEq(actual.closeStabilityBelow, expected.closeStabilityBelow, "closeStabilityBelow");
         assertEq(actual.closeHoursAtMost, expected.closeHoursAtMost, "closeHoursAtMost");
-        assertEq(actual.maxSpawnsPerTx, expected.maxSpawnsPerTx, "maxSpawnsPerTx");
         assertEq(actual.basePressurePerHour, expected.basePressurePerHour, "basePressurePerHour");
         assertEq(actual.pressureRampPerHour, expected.pressureRampPerHour, "pressureRampPerHour");
         assertEq(actual.spawnCostUnits, expected.spawnCostUnits, "spawnCostUnits");

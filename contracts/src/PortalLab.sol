@@ -15,7 +15,8 @@ import {
     Refusal,
     RiskLevel,
     MAX_OPEN_PORTALS,
-    MAX_RESCUERS
+    MAX_RESCUERS,
+    MAX_CATCHUP_EVENTS
 } from "./PortalLabTypes.sol";
 import {RiskLib} from "./RiskLib.sol";
 import {RulesLib} from "./RulesLib.sol";
@@ -210,6 +211,10 @@ contract PortalLab is IRandomConsumer {
         // A portal must cost some pressure, or spawning would divide by zero and
         // never terminate (SPEC §7).
         if (cfg.spawnCostUnits == 0) revert InvalidConfig("spawnCostUnits");
+        // Every collapse must cost HP: that is what bounds the number of events one
+        // catch-up can meet (a lab cannot keep birthing and collapsing for free),
+        // and with it the work of a single call (TimeLib, MAX_CATCHUP_EVENTS).
+        if (cfg.hpEmptyCollapse == 0) revert InvalidConfig("hpEmptyCollapse");
         // An epoch must span at least one game hour, or the epoch-of-hour maths
         // (`hour / epochHours`) would divide by zero (Ticket 4.5 §1.4).
         if (cfg.epochHours == 0) revert InvalidConfig("epochHours");
@@ -260,9 +265,9 @@ contract PortalLab is IRandomConsumer {
             (
                 Game memory g,
                 ,
-                TimeLib.Collapse[MAX_OPEN_PORTALS] memory collapses,
+                TimeLib.Collapse[MAX_CATCHUP_EVENTS] memory collapses,
                 uint8 collapseCount,
-                TimeLib.Spawn[MAX_OPEN_PORTALS] memory catchUpSpawns,
+                TimeLib.Spawn[MAX_CATCHUP_EVENTS] memory catchUpSpawns,
                 uint8 spawnCount,
             ) = _catchUpFree(player, c, uint40(block.timestamp));
 
@@ -300,8 +305,9 @@ contract PortalLab is IRandomConsumer {
         game.power = _config.powerMax;
         game.observersFree = _config.observersTotal;
         game.rescuersFree = _config.rescuersTotal;
-        // A starting hand: three portals' worth of pressure is already accrued, so
-        // the first walked game hour spawns `maxSpawnsPerTx` portals (Ticket 8.1).
+        // A starting hand: three portals' worth of pressure is already accrued at
+        // hour 0, so three portals are born at hour 0 as soon as epoch 0 is pinned
+        // to a word (Ticket 8.1; TimeLib.catchUp births at maturity).
         game.spawnDebt = 3 * _config.spawnCostUnits;
         // hoursElapsed, diedAtHour, openPortals, spawnCount, rngNonce = 0;
         // finished = false — all left at their zeroed defaults.
@@ -369,9 +375,9 @@ contract PortalLab is IRandomConsumer {
         (
             Game memory g,
             Portal[MAX_OPEN_PORTALS] memory portals,
-            TimeLib.Collapse[MAX_OPEN_PORTALS] memory collapses,
+            TimeLib.Collapse[MAX_CATCHUP_EVENTS] memory collapses,
             uint8 collapseCount,
-            TimeLib.Spawn[MAX_OPEN_PORTALS] memory catchUpSpawns,
+            TimeLib.Spawn[MAX_CATCHUP_EVENTS] memory catchUpSpawns,
             uint8 spawnCount,
             bool cappedShort
         ) = _catchUpFree(player, c, uint40(block.timestamp));
@@ -619,9 +625,9 @@ contract PortalLab is IRandomConsumer {
         (
             Game memory g,
             Portal[MAX_OPEN_PORTALS] memory portals,
-            TimeLib.Collapse[MAX_OPEN_PORTALS] memory collapses,
+            TimeLib.Collapse[MAX_CATCHUP_EVENTS] memory collapses,
             uint8 collapseCount,
-            TimeLib.Spawn[MAX_OPEN_PORTALS] memory catchUpSpawns,
+            TimeLib.Spawn[MAX_CATCHUP_EVENTS] memory catchUpSpawns,
             uint8 spawnCount,
         ) = _catchUpFree(player, c, uint40(block.timestamp));
 
@@ -686,9 +692,9 @@ contract PortalLab is IRandomConsumer {
         (
             Game memory g,
             Portal[MAX_OPEN_PORTALS] memory portals,
-            TimeLib.Collapse[MAX_OPEN_PORTALS] memory collapses,
+            TimeLib.Collapse[MAX_CATCHUP_EVENTS] memory collapses,
             uint8 collapseCount,
-            TimeLib.Spawn[MAX_OPEN_PORTALS] memory catchUpSpawns,
+            TimeLib.Spawn[MAX_CATCHUP_EVENTS] memory catchUpSpawns,
             uint8 spawnCount,
         ) = _catchUpFree(player, c, uint40(block.timestamp));
 
@@ -761,9 +767,9 @@ contract PortalLab is IRandomConsumer {
         (
             Game memory g,
             Portal[MAX_OPEN_PORTALS] memory portals,
-            TimeLib.Collapse[MAX_OPEN_PORTALS] memory collapses,
+            TimeLib.Collapse[MAX_CATCHUP_EVENTS] memory collapses,
             uint8 collapseCount,
-            TimeLib.Spawn[MAX_OPEN_PORTALS] memory catchUpSpawns,
+            TimeLib.Spawn[MAX_CATCHUP_EVENTS] memory catchUpSpawns,
             uint8 spawnCount,
         ) = _catchUp(player, c, oldWord, word, storedCovered, newCovered, nowTs);
 
@@ -821,7 +827,7 @@ contract PortalLab is IRandomConsumer {
     ) private returns (Game memory, Portal[MAX_OPEN_PORTALS] memory) {
         p.observerInside = true;
         g.observersFree -= 1;
-        g.rngNonce += 1; // keep the nonce stream aligned (see TimeLib._spawn)
+        g.rngNonce += 1; // keep the nonce stream aligned (see TimeLib._birth)
         bool precise;
         (p, precise) = EffectsLib.survey(p, c, tp, word);
         _setPortal(portals, slot, p);
@@ -936,9 +942,9 @@ contract PortalLab is IRandomConsumer {
         (
             Game memory g,
             Portal[MAX_OPEN_PORTALS] memory portals,
-            TimeLib.Collapse[MAX_OPEN_PORTALS] memory collapses,
+            TimeLib.Collapse[MAX_CATCHUP_EVENTS] memory collapses,
             uint8 collapseCount,
-            TimeLib.Spawn[MAX_OPEN_PORTALS] memory catchUpSpawns,
+            TimeLib.Spawn[MAX_CATCHUP_EVENTS] memory catchUpSpawns,
             uint8 spawnCount,
         ) = _catchUpFree(player, c, uint40(block.timestamp));
 
@@ -1088,9 +1094,9 @@ contract PortalLab is IRandomConsumer {
         (
             Game memory g,
             Portal[MAX_OPEN_PORTALS] memory portals,
-            TimeLib.Collapse[MAX_OPEN_PORTALS] memory collapses,
+            TimeLib.Collapse[MAX_CATCHUP_EVENTS] memory collapses,
             uint8 collapseCount,
-            TimeLib.Spawn[MAX_OPEN_PORTALS] memory catchUpSpawns,
+            TimeLib.Spawn[MAX_CATCHUP_EVENTS] memory catchUpSpawns,
             uint8 spawnCount,
             bool cappedShort
         ) = _catchUpFree(player, c, uint40(block.timestamp));
@@ -1157,9 +1163,9 @@ contract PortalLab is IRandomConsumer {
         (
             Game memory g,
             Portal[MAX_OPEN_PORTALS] memory portals,
-            TimeLib.Collapse[MAX_OPEN_PORTALS] memory collapses,
+            TimeLib.Collapse[MAX_CATCHUP_EVENTS] memory collapses,
             uint8 collapseCount,
-            TimeLib.Spawn[MAX_OPEN_PORTALS] memory catchUpSpawns,
+            TimeLib.Spawn[MAX_CATCHUP_EVENTS] memory catchUpSpawns,
             uint8 spawnCount,
         ) = _catchUpFree(player, _config, uint40(block.timestamp));
 
@@ -1246,9 +1252,9 @@ contract PortalLab is IRandomConsumer {
         returns (
             Game memory,
             Portal[MAX_OPEN_PORTALS] memory,
-            TimeLib.Collapse[MAX_OPEN_PORTALS] memory,
+            TimeLib.Collapse[MAX_CATCHUP_EVENTS] memory,
             uint8,
-            TimeLib.Spawn[MAX_OPEN_PORTALS] memory,
+            TimeLib.Spawn[MAX_CATCHUP_EVENTS] memory,
             uint8,
             bool
         )
@@ -1275,9 +1281,9 @@ contract PortalLab is IRandomConsumer {
         returns (
             Game memory,
             Portal[MAX_OPEN_PORTALS] memory,
-            TimeLib.Collapse[MAX_OPEN_PORTALS] memory,
+            TimeLib.Collapse[MAX_CATCHUP_EVENTS] memory,
             uint8,
-            TimeLib.Spawn[MAX_OPEN_PORTALS] memory,
+            TimeLib.Spawn[MAX_CATCHUP_EVENTS] memory,
             uint8,
             bool
         )
@@ -1290,7 +1296,7 @@ contract PortalLab is IRandomConsumer {
     /// @dev Emit one `PortalCollapsed` per catch-up collapse, in order.
     function _emitCollapses(
         address player,
-        TimeLib.Collapse[MAX_OPEN_PORTALS] memory collapses,
+        TimeLib.Collapse[MAX_CATCHUP_EVENTS] memory collapses,
         uint8 count
     ) internal {
         for (uint8 i = 0; i < count; i++) {
@@ -1301,7 +1307,7 @@ contract PortalLab is IRandomConsumer {
     }
 
     /// @dev Emit one `PortalSpawned` per catch-up spawn, in order.
-    function _emitSpawns(address player, TimeLib.Spawn[MAX_OPEN_PORTALS] memory spawns, uint8 count) internal {
+    function _emitSpawns(address player, TimeLib.Spawn[MAX_CATCHUP_EVENTS] memory spawns, uint8 count) internal {
         for (uint8 i = 0; i < count; i++) {
             emit PortalSpawned(player, spawns[i].slot, spawns[i].portalType, spawns[i].nameIndex, spawns[i].atHour);
         }

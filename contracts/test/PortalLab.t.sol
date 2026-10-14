@@ -40,7 +40,6 @@ contract PortalLabTest is Test {
         assertEq(c.observersTotal, 3);
         assertEq(c.rescuersTotal, 2);
         assertEq(c.closeStabilityBelow, 40);
-        assertEq(c.maxSpawnsPerTx, 3);
     }
 
     // 2. Per-type parameters are stored, with the distinctive ones checked.

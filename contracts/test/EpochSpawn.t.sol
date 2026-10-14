@@ -307,34 +307,46 @@ contract EpochSpawnTest is Test {
     // ── 8.1: worst-case epoch-crossing reveal gas ─────────────────────────────
 
     /// Return after twenty epochs to a full twelve-portal lab, so the reveal's
-    /// catch-up processes a wave of collapses, refills freed slots with fresh
-    /// spawns, and survives (high HP keeps the §5.5 overflow from ending it first).
-    /// This is the heaviest `receiveWord` path. The Pyth callback limit is
-    /// 1 000 000 gas; a blocker is anything closer than a third of it (>= 666 667).
+    /// catch-up processes a wave of collapses and refills every freed slot with a
+    /// birth at once. This is the heaviest `receiveWord` path a REAL game can
+    /// reach (hp <= hpMax). The Pyth callback limit is 1 000 000 gas; a blocker is
+    /// anything closer than a third of it (>= 666 667).
+    ///
+    /// Why this state. Births now happen at maturity inside the window, so the
+    /// work of a reveal grows with the number of events it meets, and HP is what
+    /// bounds that number: every collapse costs HP and a full lab drains it. The
+    /// heaviest reachable shape keeps the lab full at the edge (so the abandoned-lab
+    /// rule beyond the edge does not end the run before the word arrives), makes the
+    /// twelve stored collapses as cheap as possible (surveyed and empty: 3 hp each),
+    /// and holds enough debt to refill each freed slot immediately. A reviewer
+    /// sweep over debt 0..200 000, collapse staggers 0..3 hours, absences of 1, 2
+    /// and 20 epochs and three portal types peaked at about 595 000 gas, with this
+    /// debt and stagger. (The former stand had 60 000 hp: unreachable, and with
+    /// births at maturity it walks the full 64-event fuse.)
     function test_Gas_CrossingRevealWorstCase_UnderBudget() public {
         Game memory g;
         g.startedAt = BASE;
         g.lastTickAt = BASE;
-        g.hp = 60_000; // survive the wave so the reveal does maximal work
+        g.hp = 100; // hpMax: the most a real game can hold, so the most events it can meet
         g.power = 100;
         g.observersFree = 3;
         g.rescuersFree = 2;
         g.openPortals = 12;
+        g.spawnDebt = 110_000; // eleven portals' worth: every freed slot refills at once
         harness.setGame(player, g);
         harness.setCoverage(player, uint256(keccak256("seed")), 0); // nothing pinned
 
-        // Twelve occupied portals collapsing at staggered hours 1..12, each holding
-        // creatures (the costlier collapse branch), snapshotted at BASE.
+        // Twelve occupied portals collapsing at staggered hours 1..12, surveyed and
+        // empty (the cheapest collapse, so the most of them before death),
+        // snapshotted at BASE.
         for (uint8 i = 0; i < 12; i++) {
             Portal memory p;
             p.status = PortalStatus.Open;
             p.portalType = PortalType.LongLived;
             p.snapshotAt = BASE;
             p.hoursToCollapse = uint16(i + 1);
+            p.surveyed = true;
             p.creaturesKnown = true;
-            p.creatures = 2;
-            p.creaturesLo = 2;
-            p.creaturesHi = 2;
             harness.setPortal(player, i, p);
         }
 
@@ -350,7 +362,9 @@ contract EpochSpawnTest is Test {
 
         console2.log("crossing-reveal worst-case gas used (incl. source dispatch):", used);
         assertLt(used, 666_667, "crossing reveal must stay well under the 1M callback limit");
-        assertFalse(harness.getGame(player).finished, "survived the wave");
+        // The wave really happened: the stored portals collapsed and their slots
+        // were refilled by births inside the window.
+        assertGe(uint256(harness.getGame(player).spawnCount), 10, "freed slots were refilled");
         assertFalse(harness.getPending(player).active, "deferral resolved");
     }
 

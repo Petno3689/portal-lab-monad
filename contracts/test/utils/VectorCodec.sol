@@ -116,7 +116,6 @@ library VectorCodec {
             kv("rescuerCooldownHours", c.rescuerCooldownHours), ",",
             kv("closeStabilityBelow", c.closeStabilityBelow), ",",
             kv("closeHoursAtMost", c.closeHoursAtMost), ",",
-            kv("maxSpawnsPerTx", c.maxSpawnsPerTx), ",",
             kv("basePressurePerHour", c.basePressurePerHour), ",",
             kv("pressureRampPerHour", c.pressureRampPerHour), ",",
             kv("spawnCostUnits", c.spawnCostUnits), ",",
@@ -417,7 +416,6 @@ library VectorCodec {
     function _readConfigsC(string memory json, string memory path, Config[] memory out) private pure {
         uint256[] memory closeStabilityBelow = _u(json, path, "closeStabilityBelow");
         uint256[] memory closeHoursAtMost = _u(json, path, "closeHoursAtMost");
-        uint256[] memory maxSpawnsPerTx = _u(json, path, "maxSpawnsPerTx");
         uint256[] memory basePressurePerHour = _u(json, path, "basePressurePerHour");
         uint256[] memory pressureRampPerHour = _u(json, path, "pressureRampPerHour");
         uint256[] memory spawnCostUnits = _u(json, path, "spawnCostUnits");
@@ -430,7 +428,6 @@ library VectorCodec {
             Config memory c = out[i];
             c.closeStabilityBelow = uint8(closeStabilityBelow[i]);
             c.closeHoursAtMost = uint16(closeHoursAtMost[i]);
-            c.maxSpawnsPerTx = uint8(maxSpawnsPerTx[i]);
             c.basePressurePerHour = uint32(basePressurePerHour[i]);
             c.pressureRampPerHour = uint32(pressureRampPerHour[i]);
             c.spawnCostUnits = uint32(spawnCostUnits[i]);

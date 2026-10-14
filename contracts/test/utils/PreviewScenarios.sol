@@ -65,10 +65,13 @@ contract PreviewScenarios {
     /// @dev Game hours of absence that accrue enough spawn pressure for exactly
     /// one portal (`basePressurePerHour` is about a tenth of `spawnCostUnits`).
     uint32 private constant HOURS_ONE_PORTAL = 10;
-    /// @dev Game hours of absence that accrue enough pressure for the
-    /// `maxSpawnsPerTx` cap to bind, while stopping short of the first pinned
-    /// epoch edge so the resulting state can still be projected FORWARD.
-    uint32 private constant HOURS_FULL_HOUSE = 34;
+    /// @dev Game hours of absence that leave the starting hand — three portals
+    /// born at hour 0 — open and untouched: no portal lives fewer than five hours
+    /// and the next one matures only at hour 10. Short of the first pinned epoch
+    /// edge, so the resulting state can still be projected FORWARD. (It was 34
+    /// while a per-call spawn cap existed; with births at maturity a 34-hour
+    /// absence lets the hand collapse and usually kills a 50-hp run.)
+    uint32 private constant HOURS_FULL_HOUSE = 4;
     /// @dev Game hours of absence long enough for the deterministic long-absence
     /// overflow (SPEC §5.5) to fill the lab and end the run with no word at all.
     uint32 private constant HOURS_ABANDONED = 200;
@@ -90,7 +93,7 @@ contract PreviewScenarios {
     function label(uint256 i) external pure returns (string memory) {
         if (i == 0) return "a freshly started game, no time has passed";
         if (i == 1) return "one open portal, pinned edge still ahead";
-        if (i == 2) return "the per-transaction spawn cap bound: three open portals";
+        if (i == 2) return "the starting hand: three open portals";
         if (i == 3) return "seventeen hours lived one hour at a time";
         if (i == 4) return "a survey committed, its word still in flight";
         if (i == 5) return "a surveyed portal with the observer still inside";
@@ -298,10 +301,14 @@ contract PreviewScenarios {
     /// @dev Send rescuers into unsurveyed portals until one of them finds the
     /// portal empty and leaves for recovery, parking a cooldown cell in the game.
     /// A rescuer who DID get in is recalled, so the next portal can be tried.
+    /// Lives to the hour the first portal after the hand is born: a blind rescuer
+    /// is judged on the cautious end of the ranges, and only a portal born that
+    /// very hour still has its type's ranges un-widened (the hand's have drifted
+    /// out since hour 0 and read critical).
     function _rescuerRecovering(uint256 state) private returns (address) {
         for (uint256 a = 0; a < ATTEMPTS; a++) {
             address player = _addr(state, a);
-            _startAndLive(player, HOURS_FULL_HOUSE);
+            _startAndLive(player, HOURS_ONE_PORTAL);
             for (uint8 slot = 0; slot < MAX_OPEN_PORTALS; slot++) {
                 if (lab.getPortals(player)[slot].status == PortalStatus.Empty) continue;
                 if (lab.canAct(player, slot, Action.SendRescuer) != Refusal.None) continue;

@@ -198,9 +198,9 @@ contract SpawnGoldenTest is Test {
         (
             Game memory g2,
             Portal[12] memory p2,
-            TimeLib.Collapse[12] memory ev,
+            TimeLib.Collapse[64] memory ev,
             uint8 evN,
-            TimeLib.Spawn[12] memory sp,
+            TimeLib.Spawn[64] memory sp,
             uint8 spN,
             bool capped
         ) = TimeLib.catchUp(

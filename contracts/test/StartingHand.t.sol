@@ -3,7 +3,7 @@ pragma solidity 0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {PortalLab} from "../src/PortalLab.sol";
-import {Game, Pending, Config} from "../src/PortalLabTypes.sol";
+import {Game, Pending, Config, Portal, PortalStatus, MAX_OPEN_PORTALS} from "../src/PortalLabTypes.sol";
 import {PortalLabHarness} from "./utils/PortalLabHarness.sol";
 import {DeterministicSource} from "./utils/DeterministicSource.sol";
 import {DefaultConfig} from "./utils/DefaultConfig.sol";
@@ -66,17 +66,25 @@ contract StartingHandTest is Test {
         harness.startGame{value: f - 1}();
     }
 
-    /// The reveal is the existing `receiveWord` path: after one game hour the lab
-    /// holds `maxSpawnsPerTx` portals.
+    /// The reveal is the existing `receiveWord` path. The starting hand's pressure
+    /// is mature at hour 0, so the moment epoch 0 is pinned the three portals are
+    /// born AT hour 0 — a word arriving 3 seconds later, still inside hour 0, finds
+    /// them born then, not at whatever hour the reveal happens to land.
     function test_StartGame_Paid_RevealFillsLab() public {
         harness.startGame{value: source.fee()}();
-        vm.warp(BASE + c.secPerHour);
+        vm.warp(BASE + 3);
         source.reveal(harness.getPending(player).requestId);
 
         assertFalse(harness.getPending(player).active, "deferral resolved");
         Game memory g = harness.getGame(player);
-        assertEq(uint256(g.openPortals), uint256(c.maxSpawnsPerTx), "starting hand spawned");
-        assertEq(uint256(g.hoursElapsed), 1, "walked one hour");
+        assertEq(uint256(g.openPortals), 3, "starting hand spawned");
+        assertEq(uint256(g.hoursElapsed), 0, "still hour 0");
+        assertEq(uint256(g.spawnDebt), 0, "the hand spent the seeded pressure");
+        Portal[MAX_OPEN_PORTALS] memory ps = harness.getPortals(player);
+        for (uint8 i = 0; i < 3; i++) {
+            assertEq(uint8(ps[i].status), uint8(PortalStatus.Open), "slot of the hand is open");
+            assertEq(uint256(ps[i].spawnedAtHour), 0, "born at hour 0");
+        }
     }
 
     function test_gas_startGame_withAndWithoutFee() public {

@@ -13,6 +13,16 @@ pragma solidity 0.8.28;
 /// the fixed portal array, not a tunable parameter — hence a `constant`.
 uint256 constant MAX_OPEN_PORTALS = 12;
 
+/// @dev Fuse on the number of events (collapses plus births) one catch-up may
+/// process. Sizes the event arrays `TimeLib.catchUp` returns. When it is exhausted
+/// the walk stops at the hour of the last processed event and reports it like the
+/// pinned edge (`cappedShort`), so the next call continues. With the deployed
+/// configuration a real game never reaches it: every collapse costs HP
+/// (`hpEmptyCollapse > 0`, enforced at deploy), an unsurveyed newborn's collapse
+/// costs at least `hpCollapseBase + hpCollapsePerDeath`, and HP never exceeds
+/// `hpMax`. A protocol bound, not a tunable — hence a `constant`.
+uint256 constant MAX_CATCHUP_EVENTS = 64;
+
 /// @dev Upper bound on the number of rescuers a game may have. Bounds the
 /// rescuer cooldown ledger in `Game` (the `rescuerReadyAt0..3` cells);
 /// `Config.rescuersTotal` is validated against it at deploy. A protocol
@@ -361,8 +371,9 @@ struct Config {
     // closing thresholds
     uint8 closeStabilityBelow;
     uint16 closeHoursAtMost;
-    // spawns (pressure in units; one unit = 1/spawnCostUnits of a portal, SPEC §4.6/§7)
-    uint8 maxSpawnsPerTx;
+    // spawns (pressure in units; one unit = 1/spawnCostUnits of a portal, SPEC §4.6/§7).
+    // There is no per-transaction spawn cap: a portal is born at the hour its
+    // pressure matures, whoever calls and whenever (TimeLib.catchUp).
     uint32 basePressurePerHour; // pressure gained per game hour at the start
     uint32 pressureRampPerHour; // extra pressure per hour added for each lived hour
     uint32 spawnCostUnits; // pressure one portal costs

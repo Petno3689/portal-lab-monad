@@ -39,9 +39,11 @@ import {TimeHarness} from "../test/utils/TimeHarness.sol";
 ///
 ///   "refusals": rows in the same input shape whose `expected` is only
 ///   `{reverted, error}`. `catchUp` is a public path and is NOT total: called with
-///   a `lastTickAt` ahead of `nowTs` it can underflow. Those rows prove the
-///   mirror falls over in the same place and the same way, instead of inventing
-///   an answer.
+///   a counter at its uint32 ceiling it panics. Those rows prove the mirror falls
+///   over in the same place and the same way, instead of inventing an answer.
+///   (A clock behind `lastTickAt` is NOT a refusal any more: `catchUp` clamps it,
+///   and those rows are ordinary vectors, each asserted equal to the call at
+///   `lastTickAt` at generation time.)
 ///
 /// Coverage: every required case is registered by name (`_register`) and marked by
 /// the vectors that reach it; the run ABORTS if any case is reached by none.
@@ -49,7 +51,7 @@ contract GenSpawnVectors is Script {
     string private constant PATH = "../shared/test/vectors/spawn-vectors.json";
 
     uint256 private constant CAPACITY = 80;
-    uint256 private constant REFUSALS = 8;
+    uint256 private constant REFUSALS = 2;
     uint256 private constant CONFIG_COUNT = 8;
     uint256 private constant SET_COUNT = 3;
     uint256 private constant RANDOM = 24;
@@ -135,6 +137,7 @@ contract GenSpawnVectors is Script {
         for (uint256 i = 0; i < n; i++) {
             _eval(vs[i], cfgs, tps);
             spawnTotal += vs[i].spN;
+            _requireStaleEqualsTick(vs[i], cfgs, tps);
             _tag(cv, vs[i], cfgs, tps);
         }
         for (uint256 i = 0; i < nr; i++) {
@@ -318,6 +321,7 @@ contract GenSpawnVectors is Script {
         n = _dSpawns(vs, n);
         n = _dEpoch(vs, n);
         n = _dHunted(vs, n, cfgs, tps);
+        n = _dStale(vs, n);
         return n;
     }
 
@@ -605,27 +609,16 @@ contract GenSpawnVectors is Script {
         return n;
     }
 
-    // ── refusal vectors ─────────────────────────────────────────────────────
-
-    /// @dev `catchUp` is not total. Every row here is a reachable input on which
-    /// the contract PANICS, recorded so both replayers can prove they fall over in
-    /// the same place and the same way.
-    ///
-    /// The first three walk the same road: `nowTs` BEHIND `lastTickAt` (a stale
-    /// snapshot — a caller holding an old timestamp, never the live chain) makes
-    /// `hNow < windowStart`, and the walk's `hNow - windowStart` underflows whatever
-    /// the debt (the debts below are kept from when only a debt meeting `needed`
-    /// reached the underflow). The last
-    /// two are the per-spawn counters at their uint32 ceiling: the next spawn
-    /// increments `rngNonce`, then `spawnCount`, and a `uint32` at its maximum
-    /// cannot take the increment.
-    function _refusals(Vec[] memory rf, uint256 n) private pure returns (uint256) {
+    // Group F — a stale clock (`nowTs` behind `lastTickAt`). catchUp clamps the
+    // clock, so these are ordinary vectors; `_requireStaleEqualsTick` proves at
+    // generation time that each equals the same call at `lastTickAt`.
+    function _dStale(Vec[] memory vs, uint256 n) private pure returns (uint256) {
         // Empty lab, needed 120000, debt 150000, the clock five hours behind.
         Game memory g = _g();
         g.spawnDebt = 150_000;
         g.lastTickAt = _tsOf(10, SPH);
         g.hoursElapsed = 10;
-        n = _add(rf, n, "refusal: a stale clock underflows", g, 1, 0, 1, 2, _tsOf(5, SPH));
+        n = _add(vs, n, "stale clock: five hours behind, debt above needed", g, 1, 0, 1, 2, _tsOf(5, SPH));
 
         // Half the lab occupied (needed 60000) and the debt exactly meeting it:
         // the condition is reached by equality, not by a wide margin.
@@ -633,18 +626,30 @@ contract GenSpawnVectors is Script {
         g.spawnDebt = 60_000;
         g.lastTickAt = _tsOf(20, SPH);
         g.hoursElapsed = 20;
-        n = _add(rf, n, "refusal: a stale clock, the debt meeting needed exactly", g, 1, 0, 1, 2, _tsOf(3, SPH));
-        _fill(rf, n, 6);
+        n = _add(vs, n, "stale clock: the debt meeting needed exactly", g, 1, 0, 1, 2, _tsOf(3, SPH));
+        _fill(vs, n, 6);
 
-        // The same underflow one second before the window start, under config 4
+        // The same staleness one second before the window start, under config 4
         // (one second per game hour), where a single second of staleness is a
         // whole game hour.
         g = _g();
         g.spawnDebt = 120_000;
         g.lastTickAt = _tsOf(9, 1);
         g.hoursElapsed = 9;
-        n = _add(rf, n, "refusal: a stale clock by a single game hour", g, 4, 0, 1, 20, _tsOf(8, 1));
+        n = _add(vs, n, "stale clock: behind by a single game hour", g, 4, 0, 1, 20, _tsOf(8, 1));
 
+        return n;
+    }
+
+    // ── refusal vectors ─────────────────────────────────────────────────────
+
+    /// @dev `catchUp` is not total. Every row here is a reachable input on which
+    /// the contract PANICS, recorded so both replayers can prove they fall over in
+    /// the same place and the same way: the per-spawn counters at their uint32
+    /// ceiling. The next spawn increments `rngNonce`, then `spawnCount`, and a
+    /// `uint32` at its maximum cannot take the increment.
+    function _refusals(Vec[] memory rf, uint256 n) private pure returns (uint256) {
+        Game memory g;
         // rngNonce at the ceiling: the spawn's first act is to bump it.
         g = _g();
         g.rngNonce = U32_MAX;
@@ -776,6 +781,36 @@ contract GenSpawnVectors is Script {
         }
     }
 
+    /// @dev A stale clock must give exactly the result of the call at `lastTickAt`.
+    function _requireStaleEqualsTick(Vec memory v, Config[] memory cfgs, PortalTypeParams[] memory tps)
+        private
+        pure
+    {
+        if (v.nowTs >= v.g.lastTickAt) return;
+        bytes memory a = _run(v, cfgs, tps, v.nowTs);
+        bytes memory b = _run(v, cfgs, tps, v.g.lastTickAt);
+        require(keccak256(a) == keccak256(b), string.concat("stale clock differs from lastTickAt: ", v.label));
+    }
+
+    function _run(Vec memory v, Config[] memory cfgs, PortalTypeParams[] memory tps, uint40 ts)
+        private
+        pure
+        returns (bytes memory)
+    {
+        Game memory gIn = abi.decode(abi.encode(v.g), (Game));
+        Portal[12] memory pIn = abi.decode(abi.encode(v.p), (Portal[12]));
+        (
+            Game memory rg,
+            Portal[12] memory rp,
+            TimeLib.Collapse[64] memory ev,
+            uint8 evN,
+            TimeLib.Spawn[64] memory sp,
+            uint8 spN,
+            bool capped
+        ) = TimeLib.catchUp(gIn, pIn, cfgs[v.cfg], _set(tps, v.ts), v.oldWord, v.newWord, v.stored, v.maxCov, ts);
+        return abi.encode(rg, rp, ev, evN, sp, spN, capped);
+    }
+
     // ── coverage ────────────────────────────────────────────────────────────
 
     function _reg(Cov memory cv, string memory name) private pure {
@@ -824,7 +859,7 @@ contract GenSpawnVectors is Script {
 
         _reg(cv, "fuse: the event cap stops the walk, reported as cappedShort");
 
-        _reg(cv, "refusal: a stale clock underflows");
+        _reg(cv, "stale clock: equals the call at lastTickAt");
         _reg(cv, "refusal: rngNonce at the uint32 ceiling");
         _reg(cv, "refusal: spawnCount at the uint32 ceiling");
     }
@@ -869,7 +904,8 @@ contract GenSpawnVectors is Script {
 
     function _derive(Vec memory v, Config memory c) private pure returns (Derived memory d) {
         d.sph = c.secPerHour;
-        d.hNow = (uint256(v.nowTs) - uint256(v.g.startedAt)) / d.sph;
+        uint256 nowEff = v.nowTs < v.g.lastTickAt ? v.g.lastTickAt : v.nowTs; // catchUp clamps a stale clock
+        d.hNow = (uint256(nowEff) - uint256(v.g.startedAt)) / d.sph;
         d.windowStart = (uint256(v.g.lastTickAt) - uint256(v.g.startedAt)) / d.sph;
         uint256 edge = v.maxCov == 0 ? d.windowStart : uint256(v.maxCov) * uint256(c.epochHours) - 1;
         if (edge < d.windowStart) edge = d.windowStart;
@@ -922,6 +958,7 @@ contract GenSpawnVectors is Script {
     function _tag(Cov memory cv, Vec memory v, Config[] memory cfgs, PortalTypeParams[] memory tps) private pure {
         Config memory c = cfgs[v.cfg];
         if (v.g.startedAt == 0 || v.g.finished || v.nowTs < v.g.startedAt) return; // nothing is walked
+        _mark(cv, v.nowTs < v.g.lastTickAt, "stale clock: equals the call at lastTickAt");
         Derived memory d = _derive(v, c);
         bool walkDeath = v.rg.finished && !d.tailDeath;
 
@@ -1024,7 +1061,6 @@ contract GenSpawnVectors is Script {
 
     function _tagRefusal(Cov memory cv, Vec memory v) private pure {
         bool panic = keccak256(bytes(v.err)) == keccak256(bytes("Panic(0x11)"));
-        _mark(cv, panic && v.nowTs < v.g.lastTickAt, "refusal: a stale clock underflows");
         _mark(cv, panic && v.g.rngNonce == U32_MAX, "refusal: rngNonce at the uint32 ceiling");
         _mark(cv, panic && v.g.rngNonce != U32_MAX && v.g.spawnCount == U32_MAX,
             "refusal: spawnCount at the uint32 ceiling");

@@ -171,9 +171,9 @@ library TimeLib {
     ///   (stop at the pinned edge); a reveal passes the epoch of `nowTs` plus one
     ///   (advance all the way). The deterministic overflow death beyond the edge
     ///   (§5.5) ignores this cap — it needs no word.
-    /// @param nowTs Current `block.timestamp`. A clock behind `lastTickAt` by a
-    ///   game hour or more is not a moment the world can be brought to and reverts
-    ///   (checked arithmetic, Panic 0x11).
+    /// @param nowTs Current `block.timestamp`. A clock behind `lastTickAt` is
+    ///   treated as no time passed: `nowTs` is clamped to `lastTickAt`, and the
+    ///   result equals the call at `lastTickAt`.
     /// @return The aged game, the aged portals, the collapse events (valid for
     ///   indices `0..collapseCount-1`) and their count, the birth events (valid
     ///   for `0..spawnCount-1`) and their count, and `cappedShort` — true when the
@@ -212,6 +212,10 @@ library TimeLib {
             return (g, portals, events, 0, spawns, 0, false);
         }
 
+        // A clock behind lastTickAt (a browser clock a little slow) means no time
+        // has passed: the result equals the call at lastTickAt.
+        if (nowTs < g.lastTickAt) nowTs = g.lastTickAt;
+
         Walk memory w;
         w.sph = c.secPerHour;
         w.hNow = (uint256(nowTs) - uint256(g.startedAt)) / w.sph;
@@ -231,7 +235,7 @@ library TimeLib {
         uint256 edge = maxCoveredEpochs == 0 ? w.h0 : uint256(maxCoveredEpochs) * uint256(c.epochHours) - 1;
         w.birthsOk = maxCoveredEpochs > 0 && w.h0 <= edge && c.spawnCostUnits > 0;
         uint256 room = edge > w.h0 ? edge - w.h0 : 0;
-        uint256 ahead = w.hNow - w.h0; // reverts on a stale clock, see @param nowTs
+        uint256 ahead = w.hNow - w.h0; // nowTs >= lastTickAt after the clamp
         w.hEnd = w.h0 + (ahead < room ? ahead : room);
         cappedShort = w.hEnd < w.hNow;
         w.aEnd = w.debt0 + spawnPressure(w.h0, w.hEnd, c);

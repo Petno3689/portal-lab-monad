@@ -254,9 +254,13 @@ contract SpawnTest is Test {
     }
 
     function test_PortalsInOneCallDiffer() public {
-        harness.setGame(player, _g());
+        // Three births in ONE call with no collapse in between: the debt already
+        // holds 3 * spawnCostUnits, so all three mature at the call's first hour.
+        Game memory g = _g();
+        g.spawnDebt = 30_000;
+        harness.setGame(player, g);
 
-        _warpHours(100); // three portals in one call (slots 0,1,2)
+        _warpHours(1);
         harness.sync(player);
 
         Portal memory a = _portal_(0);
@@ -290,17 +294,20 @@ contract SpawnTest is Test {
         assertEq(_game_().spawnDebt, 8000 + 2500, "grew by exactly closePressureBonus");
         assertEq(_game_().openPortals, 0, "portal closed");
 
-        // A sync in the same game hour spawns nothing and leaves spawnDebt alone:
-        // a call that did not advance the world may not spend debt.
+        // The debt now holds a full portal (10_500 >= spawnCostUnits). It matured
+        // at the close hour, so the next catch-up births it AT that hour, even
+        // with no time passed: spawnedAtHour == the close hour (0).
         harness.sync(player);
-        assertEq(_game_().openPortals, 0, "same hour: no spawn");
-        assertEq(_game_().spawnDebt, 10_500, "same hour: debt untouched");
+        assertEq(_game_().openPortals, 1, "the matured portal is born at the close hour");
+        assertEq(_game_().spawnCount, 1, "one birth");
+        assertEq(_portal_(0).spawnedAtHour, 0, "born at the close hour");
+        assertEq(_game_().spawnDebt, 500, "10_500 - 10_000 spent");
 
-        // One game hour later: 10_500 + P(0,1)(1_000) = 11_500 >= 10_000 → one portal.
+        // One game hour later only P(0,1) = 1_000 accrues: 1_500, not enough.
         _warpHours(1);
         harness.sync(player);
-        assertEq(_game_().openPortals, 1, "closing seeded a new spawn");
-        assertEq(_game_().spawnDebt, 1_500, "11_500 - 10_000 spent");
+        assertEq(_game_().spawnCount, 1, "no second birth");
+        assertEq(_game_().spawnDebt, 1_500, "500 + 1_000 accrued");
     }
 
     // ── Group 10: A collapse does NOT add pressure ────────────────────────────
@@ -408,15 +415,17 @@ contract SpawnTest is Test {
     // ── Group 14: Pressure saturates, never overflowing uint32 ────────────────
 
     function test_PressureSaturates() public {
-        harness.setGame(player, _g());
+        // Full lab, no collapse in the window, hp enough for the overflow: nothing
+        // is born or spent, so the debt just accrues and must saturate, not wrap.
+        // 100 hp - 10 h * 5 overflow = 50 survives; P(0,10) = 10_045 > the 100 left.
+        _fillTwelve(100, uint32(SPAWN_DEBT_MAX - 100));
 
-        // P(0,100_000) ≈ 5.1e9 > SPAWN_DEBT_MAX (1e9): must saturate, not wrap.
-        _warpHours(100_000);
+        _warpHours(10);
         harness.sync(player);
 
-        assertLe(uint256(_game_().spawnDebt), SPAWN_DEBT_MAX, "debt <= SPAWN_DEBT_MAX");
-        // Saturated to 1e9, then three real portals spent 3*10_000.
-        assertEq(_game_().spawnDebt, uint32(SPAWN_DEBT_MAX - 30_000), "saturated then capped spend");
+        assertFalse(_game_().finished, "the lab survived the window");
+        assertEq(_game_().spawnCount, 0, "no free slot: nothing born");
+        assertEq(uint256(_game_().spawnDebt), SPAWN_DEBT_MAX, "saturated at SPAWN_DEBT_MAX");
     }
 
     // ── Group 15: `preview` matches `sync`, spawns included ────────────────────

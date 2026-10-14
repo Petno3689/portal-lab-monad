@@ -17,7 +17,7 @@ import {
 /// @dev Number of states `PreviewScenarios.build` can produce (`0 … COUNT-1`).
 /// A file-level constant so both consumers can size their loops without first
 /// having a deployed driver to ask.
-uint256 constant PREVIEW_STATE_COUNT = 11;
+uint256 constant PREVIEW_STATE_COUNT = 12;
 
 /// @title PreviewScenarios — reachable player states, produced by the contract itself.
 /// @notice Every state this driver hands back was WORKED OUT BY `PortalLab`, not
@@ -92,7 +92,7 @@ contract PreviewScenarios {
     /// @notice Human name of state `i`, used as the vector label.
     function label(uint256 i) external pure returns (string memory) {
         if (i == 0) return "a freshly started game, no time has passed";
-        if (i == 1) return "one open portal, pinned edge still ahead";
+        if (i == 1) return "four open portals: the starting hand plus one born after ten hours, one epoch pinned";
         if (i == 2) return "the starting hand: three open portals";
         if (i == 3) return "seventeen hours lived one hour at a time";
         if (i == 4) return "a survey committed, its word still in flight";
@@ -102,6 +102,7 @@ contract PreviewScenarios {
         if (i == 8) return "a paid sync awaiting its word, nothing pinned yet";
         if (i == 9) return "a run the long-absence overflow killed";
         if (i == 10) return "a dead run, settled";
+        if (i == 11) return "a seeded state: exactly one open portal, one epoch pinned";
         revert ScenarioUnreachable(i);
     }
 
@@ -150,6 +151,9 @@ contract PreviewScenarios {
             player = _addr(i, 0);
             _startAndDie(player);
             lab.settle(player);
+        } else if (i == 11) {
+            player = _addr(i, 0);
+            _oneOpenPortalSeeded(player);
         } else {
             revert ScenarioUnreachable(i);
         }
@@ -227,6 +231,33 @@ contract PreviewScenarios {
     function _advance(address player) private {
         lab.sync{value: 1}(player);
         if (lab.getPending(player).active) lab.reveal(player);
+    }
+
+    /// @dev SEEDED, not played: the starting hand is three portals, so no sequence
+    /// of real calls leaves exactly one open (a close needs time and costs hp).
+    /// Starts a game for real (and lets the hand be born), then keeps one portal of the hand and empties the
+    /// other slots through the harness setters, and pins one epoch to a fixed
+    /// word. Appended LAST, so the request stream of states 0-10 is untouched.
+    function _oneOpenPortalSeeded(address player) private {
+        // Lived HOURS_FULL_HOUSE hours: the starting hand is open (as in state 2).
+        _startAndLive(player, HOURS_FULL_HOUSE);
+        Portal[MAX_OPEN_PORTALS] memory ps = lab.getPortals(player);
+        bool kept;
+        for (uint8 slot = 0; slot < MAX_OPEN_PORTALS; slot++) {
+            if (ps[slot].status == PortalStatus.Empty) continue;
+            if (!kept) {
+                kept = true;
+                continue;
+            }
+            Portal memory none;
+            lab.setPortal(player, slot, none);
+        }
+        require(kept, "PreviewScenarios: no portal in the starting hand");
+        Game memory g = lab.getGame(player);
+        g.openPortals = 1;
+        lab.setGame(player, g);
+        // setGame pins a coverage of its own; put a single epoch back after it.
+        lab.setCoverage(player, uint256(keccak256("preview-seeded-one-open")), 1);
     }
 
     /// @dev Start a game and live `h` game hours away from the keyboard, returning

@@ -397,7 +397,11 @@ contract SurveyTest is Test {
         p0.creaturesLo = 1;
         p0.creaturesHi = 4;
         p0.hoursToCollapse = 5; // <= closeHoursAtMost (6)
-        _write(_game(), p0);
+        // Births at maturity during the 100 hours below would otherwise drain the
+        // default 100 HP and end the game; a durable lab keeps the close possible.
+        Game memory durable = _game();
+        durable.hp = 60_000;
+        _write(durable, p0);
 
         vm.expectEmit(true, true, false, true);
         emit PortalLab.PortalClosed(player, 0, 4, 40, 0); // deaths creaturesHi=4, hpLost 10*4=40
@@ -409,7 +413,7 @@ contract SurveyTest is Test {
         p1.creaturesLo = 1;
         p1.creaturesHi = 4;
         p1.hoursToCollapse = 105; // survives 100 h, then 5 <= 6 → closable
-        _write(_game(), p1);
+        _write(durable, p1);
 
         _warpHours(100);
         vm.expectEmit(true, true, false, true);

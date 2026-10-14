@@ -195,6 +195,16 @@ contract EpochSpawnTest is Test {
 
     function test_PastDoesNotChange() public {
         harness.startGame();
+        // Portals are born at maturity while the player is away, and their
+        // collapses cost HP: a 50-HP start would die before the second word. Seed
+        // a durable lab so the property (a new word never re-rolls the past) is
+        // what the test measures.
+        Game memory seeded = _game();
+        seeded.hp = 60_000;
+        harness.setGame(player, seeded);
+        // setGame pins a generous coverage of its own; put "nothing pinned" back so
+        // the words are fetched by the epochs below, as in a played game.
+        harness.setCoverage(player, 0, 0);
 
         // Live through a couple of epochs so several portals are pinned to the
         // words delivered so far.

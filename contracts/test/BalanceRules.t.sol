@@ -246,9 +246,9 @@ contract BalanceRulesTest is Test {
     }
 
     function test_8_8_DeafFirstPass_DoesNotSetCreaturesKnown() public {
-        // Deaf is surveyPrecise=false. With ranges wider than deafNarrowThreshold
-        // (10), the first two-phase survey only narrows — surveyed and
-        // creaturesKnown must both stay false. `surveyPending` is set at commit and
+        // Deaf is surveyPrecise=false. The first survey of a Deaf portal
+        // (narrowedOnce still false) only narrows — surveyed and creaturesKnown
+        // must both stay false; the second survey reads exact. `surveyPending` is set at commit and
         // cleared again on reveal (SPEC §6.3), so after the full survey it is false.
         // The observer stays inside waiting for a recall and a second visit.
         Config memory c = DefaultConfig.config();
@@ -259,7 +259,7 @@ contract BalanceRulesTest is Test {
         p.creaturesKnown = false;
         p.portalType = PortalType.Deaf;
         p.energyLo = 0;
-        p.energyHi = 80; // width 80 > deafNarrowThreshold 10
+        p.energyHi = 80; // wide ranges; first survey (narrowedOnce == false) only narrows
         p.stabilityLo = 0;
         p.stabilityHi = 80;
         p.creaturesLo = 0;

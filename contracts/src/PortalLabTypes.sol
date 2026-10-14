@@ -264,12 +264,14 @@ function setRescuerReadyAt(Game memory g, uint8 i, uint32 v) pure {
 
 /// @notice A single deferred (two-phase) action awaiting its random word (SPEC
 /// §6.3). At most ONE per player: while `active`, every new action is refused.
-/// @dev Packs into ONE 32-byte storage slot (26 of 32 bytes used):
-///   active(1) + action(1) + slot(1) + atHour(4) + requestId(8) + coveredEpochs(4)
-///   + deferredWorld(1) + syncOnly(1) + committedAt(5) = 26 bytes.
+/// @dev Packs into ONE 32-byte storage slot (28 of 32 bytes used):
+///   active(1) + action(1) + slot(1) + portalId(2) + atHour(4) + requestId(8)
+///   + coveredEpochs(4) + deferredWorld(1) + syncOnly(1) + committedAt(5) = 28 bytes.
 /// This is what keeps `Player` at sixteen slots rather than seventeen — the
 /// fields must stay scalar and small; do not widen `requestId` past `uint64`
 /// (it mirrors a Pyth sequence number) or add a field that overflows the slot.
+/// The TARGET is the portal, identified by `portalId`, not the slot alone: a
+/// portal may collapse and a newborn take its slot while the word is in flight.
 /// The per-portal `Portal.surveyPending` flag marks WHICH portal is being
 /// surveyed (and gates `RecallObserver`); this struct carries the rest — which
 /// action, which request, and when — that a portal flag cannot.
@@ -293,6 +295,7 @@ struct Pending {
     bool active; // a deferred action is outstanding
     Action action; // which action was deferred
     uint8 slot; // the portal slot it targets
+    uint16 portalId; // id of the portal chosen at commit; a reveal that finds another id cancels (0 = syncOnly, unchecked)
     uint32 atHour; // game hour the commit was fixed at
     uint64 requestId; // id returned by the random source; matched on delivery
     uint32 coveredEpochs; // GAME state: spawn epochs pinned to Player.epochWord

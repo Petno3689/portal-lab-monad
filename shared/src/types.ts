@@ -134,6 +134,7 @@ export interface Pending {
     active: boolean;
     action: Action;
     slot: bigint;
+    portalId: bigint;
     atHour: bigint;
     requestId: bigint;
     coveredEpochs: bigint;

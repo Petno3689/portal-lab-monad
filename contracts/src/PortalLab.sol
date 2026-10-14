@@ -330,6 +330,7 @@ contract PortalLab is IRandomConsumer {
                 active: true,
                 action: Action.ToggleQuestioned, // unused (syncOnly); a harmless default
                 slot: 0,
+                portalId: 0,
                 atHour: 0,
                 requestId: 0,
                 coveredEpochs: _players[player].pending.coveredEpochs,
@@ -407,6 +408,7 @@ contract PortalLab is IRandomConsumer {
                 active: true,
                 action: action,
                 slot: slot,
+                portalId: slot < MAX_OPEN_PORTALS ? portals[slot].id : 0,
                 atHour: g.hoursElapsed,
                 requestId: 0,
                 coveredEpochs: _players[player].pending.coveredEpochs,
@@ -472,6 +474,7 @@ contract PortalLab is IRandomConsumer {
                 active: true,
                 action: Action.SendObserver,
                 slot: slot,
+                portalId: p.id,
                 atHour: g.hoursElapsed,
                 requestId: 0,
                 coveredEpochs: _players[player].pending.coveredEpochs,
@@ -522,6 +525,7 @@ contract PortalLab is IRandomConsumer {
                 active: true,
                 action: Action.SendRescuer,
                 slot: slot,
+                portalId: p.id,
                 atHour: g.hoursElapsed,
                 requestId: 0,
                 coveredEpochs: _players[player].pending.coveredEpochs,
@@ -807,7 +811,7 @@ contract PortalLab is IRandomConsumer {
         // whole point; nothing to cancel.
         if (pend.syncOnly) return;
 
-        (g, portals) = _performDeferredAction(player, g, portals, c, pend.slot, pend.action, word, pend.requestId);
+        (g, portals) = _performDeferredAction(player, g, portals, c, pend, word);
         _players[player].game = g;
         _players[player].portals = portals;
     }
@@ -999,6 +1003,7 @@ contract PortalLab is IRandomConsumer {
         pnd.active = false;
         pnd.action = Action.ToggleQuestioned;
         pnd.slot = 0;
+        pnd.portalId = 0;
         pnd.atHour = 0;
         pnd.requestId = 0;
         pnd.deferredWorld = false;
@@ -1019,14 +1024,24 @@ contract PortalLab is IRandomConsumer {
         Game memory g,
         Portal[MAX_OPEN_PORTALS] memory portals,
         Config memory c,
-        uint8 slot,
-        Action action,
-        uint256 word,
-        uint64 requestId
+        Pending memory pend,
+        uint256 word
     ) private returns (Game memory, Portal[MAX_OPEN_PORTALS] memory) {
+        uint8 slot = pend.slot;
+        Action action = pend.action;
         Portal memory p;
         if (slot < MAX_OPEN_PORTALS) {
             p = portals[slot];
+        }
+
+        // The target is the portal the player chose, not whatever now sits in the
+        // slot: if it collapsed and a newborn took the slot, cancel exactly like
+        // "portal gone". Nothing spent, no crew moved, newborn untouched.
+        if (slot < MAX_OPEN_PORTALS && p.id != pend.portalId) {
+            emit DeferredActionCancelled(
+                player, slot, action, Refusal.PortalEmpty, pend.requestId, g.hoursElapsed
+            );
+            return (g, portals);
         }
 
         Refusal reason = RulesLib.check(g, p, c, slot, action);
@@ -1035,7 +1050,7 @@ contract PortalLab is IRandomConsumer {
             // the word was in flight). Nothing was spent at commit, nothing to
             // refund; the world ageing stands. Emit so the front end knows the
             // reason — "portal gone" vs "not enough power" are very different.
-            emit DeferredActionCancelled(player, slot, action, reason, requestId, g.hoursElapsed);
+            emit DeferredActionCancelled(player, slot, action, reason, pend.requestId, g.hoursElapsed);
             return (g, portals);
         }
 
@@ -1119,6 +1134,7 @@ contract PortalLab is IRandomConsumer {
                 active: true,
                 action: Action.ToggleQuestioned, // unused (syncOnly); a harmless default
                 slot: 0,
+                portalId: 0,
                 atHour: g.hoursElapsed,
                 requestId: 0,
                 coveredEpochs: _players[player].pending.coveredEpochs,

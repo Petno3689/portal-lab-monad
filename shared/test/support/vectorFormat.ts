@@ -180,7 +180,6 @@ export function configFromJson(o: Json): Config {
         rescuerCooldownHours: big(o, "rescuerCooldownHours"),
         closeStabilityBelow: big(o, "closeStabilityBelow"),
         closeHoursAtMost: big(o, "closeHoursAtMost"),
-        maxSpawnsPerTx: big(o, "maxSpawnsPerTx"),
         basePressurePerHour: big(o, "basePressurePerHour"),
         pressureRampPerHour: big(o, "pressureRampPerHour"),
         spawnCostUnits: big(o, "spawnCostUnits"),

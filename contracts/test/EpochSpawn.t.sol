@@ -55,6 +55,19 @@ contract EpochSpawnTest is Test {
         }
     }
 
+    /// @dev A started game made durable: hp 60_000 and nothing pinned. With
+    /// epochHours 36 the first edge is hour 35, and a 50-hp empty lab can die
+    /// before reaching it; these tests are about WHEN a word is fetched, not
+    /// about surviving, so the run is given room (setup only, Ticket "36").
+    function _startDurable() internal {
+        harness.startGame();
+        Game memory seeded = _game();
+        seeded.hp = 60_000;
+        harness.setGame(player, seeded);
+        // setGame pins a generous coverage of its own; put "nothing pinned" back.
+        harness.setCoverage(player, 0, 0);
+    }
+
     function _reqCount() internal view returns (uint64) {
         return source.lastRequestId();
     }
@@ -107,16 +120,18 @@ contract EpochSpawnTest is Test {
         harness.setCoverage(player, uint256(keccak256("seed")), 0); // nothing pinned
         assertEq(_reqCount(), 0, "set-up requests no word");
 
-        // Leave for twenty epochs, come back, advance in a single paid sync.
-        _warpHours(20 * EPH);
+        // Leave for six epochs (it was twenty with epochHours 12: at 36 that is
+        // 720 hours, and even 60_000 hp dies to the ramping pressure at hour 297),
+        // come back, advance in a single paid sync.
+        _warpHours(6 * EPH);
         harness.sync{value: 1}(player);
-        assertTrue(harness.getPending(player).active, "crossing twenty epochs defers");
-        assertEq(_reqCount(), 1, "exactly one request covers all twenty epochs");
+        assertTrue(harness.getPending(player).active, "crossing six epochs defers");
+        assertEq(_reqCount(), 1, "exactly one request covers all six epochs");
         source.reveal(harness.getPending(player).requestId);
         assertEq(_reqCount(), 1, "reveal makes no further request");
 
         // The world reached the live hour; coverage now spans through this epoch.
-        assertEq(uint256(_game().hoursElapsed), 20 * EPH, "world advanced to now");
+        assertEq(uint256(_game().hoursElapsed), 6 * EPH, "world advanced to now");
     }
 
     // ── 4.5: startGame opens with zero portals and fetches nothing ────────────
@@ -132,7 +147,7 @@ contract EpochSpawnTest is Test {
     // ── 6.6: sync (unpaid) and settle never request ───────────────────────────
 
     function test_FreeSyncAndSettleNeverRequest() public {
-        harness.startGame();
+        _startDurable();
         // A modest absence that does NOT reach the deterministic overflow (an empty
         // 50-HP lab survives well past five epochs), so the game is genuinely
         // unfinished at the pinned edge.
@@ -167,7 +182,7 @@ contract EpochSpawnTest is Test {
     // ── 6.5: an in-epoch action with no roll is free and single-phase ─────────
 
     function test_InEpochActionIsFreeAndSinglePhase() public {
-        harness.startGame();
+        _startDurable();
         // Advance a few hours INSIDE epoch 0 so a portal exists but no edge is hit.
         _warpHours(EPH - 2);
         _advance();
@@ -243,7 +258,7 @@ contract EpochSpawnTest is Test {
     // ── 6.4: crossing AND rolling — one request serves both ───────────────────
 
     function test_CombinedCrossAndSurvey_OneRequest() public {
-        harness.startGame();
+        _startDurable();
         // Advance to hour 11 (still epoch 0): the first portal appears at hour 10
         // once accrued pressure reaches spawnCostUnits, so one portal is now open.
         _warpHours(EPH - 1);
@@ -281,7 +296,7 @@ contract EpochSpawnTest is Test {
     // ── 6.7: preview stops at the edge and equals an unpaid sync ──────────────
 
     function test_PreviewStopsAtEdgeAndMatchesSync() public {
-        harness.startGame();
+        _startDurable();
         // Pin epoch 0 by advancing partway into it.
         _warpHours(EPH - 4);
         _advance();

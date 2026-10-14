@@ -340,16 +340,18 @@ contract SpawnTest is Test {
         harness.sync(player);
 
         // The abandoned lab is walked event by event: portals are born at their
-        // maturity hours (10, 20, 30, 40, 49 — P(0,49) = 50_176 >= 50_000) and
-        // newborns collapse (hours 16, 34, 57 under this harness word, costing
-        // 40 + 40 + 20 hp). The third collapse kills at hour 57 — long before the
-        // lab could ever fill (the old analytic fill-and-overflow put death at 134).
+        // maturity hours (10, 20, 30, 40 — the fifth, due at 49, finds the run
+        // already dead) and newborns collapse; the lethal collapse falls at hour
+        // 49 under this harness word. The types and lifetimes of the newborns come
+        // from epochSeed(word, hour / epochHours); with epochHours 36 (it was 12)
+        // the same births draw different portals, hence different collapse hours
+        // (57 -> 49). The old analytic fill-and-overflow put death at 134.
         assertTrue(_game_().finished, "game over");
-        assertEq(_game_().diedAtHour, 57, "death at the hour of the lethal collapse");
+        assertEq(_game_().diedAtHour, 49, "death at the hour of the lethal collapse");
         assertLt(_game_().diedAtHour, 10_000, "far short of the pause");
         assertEq(_game_().hp, 0, "hp zeroed");
-        assertEq(_game_().openPortals, 2, "portals open at death");
-        assertEq(_game_().spawnCount, 5, "every portal that matured before death was born");
+        assertEq(_game_().openPortals, 1, "portals open at death");
+        assertEq(_game_().spawnCount, 4, "every portal that matured before death was born");
     }
 
     // ── Group 12: hFill is found exactly ──────────────────────────────────────

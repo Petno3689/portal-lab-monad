@@ -63,6 +63,7 @@ contract DeployConfigTest is Test {
         assertEq(actual.rangeWidenPerHour, expected.rangeWidenPerHour, "rangeWidenPerHour");
         assertEq(actual.epochHours, expected.epochHours, "epochHours");
         assertEq(actual.requestTimeoutHours, expected.requestTimeoutHours, "requestTimeoutHours");
+        assertEq(actual.outsiderTimeoutHours, expected.outsiderTimeoutHours, "outsiderTimeoutHours");
     }
 
     // 3. Per-type parameters are stored verbatim for all five portal types.

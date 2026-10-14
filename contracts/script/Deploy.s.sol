@@ -33,13 +33,17 @@ contract DeployScript is Script {
         console.log("Survey, blind rescue and spawn draws are delivered by a");
         console.log("fulfillment callback and are NOT knowable before the");
         console.log("request transaction lands. Stuck requests can be cancelled");
-        console.log("by anyone after the real-time timeout (cancelDeferred).");
+        console.log("by the player after requestTimeoutHours, by anyone else");
+        console.log("after outsiderTimeoutHours (cancelDeferred).");
         console.log("==========================================================");
 
         console.log("Deploying PortalLab with:");
         console.log("  hpStart        =", cfg.hpStart);
         console.log("  hpMax          =", cfg.hpMax);
         console.log("  secPerHour     =", cfg.secPerHour);
+        console.log("  epochHours     =", cfg.epochHours);
+        console.log("  requestTimeoutHours  =", cfg.requestTimeoutHours);
+        console.log("  outsiderTimeoutHours =", cfg.outsiderTimeoutHours);
 
         vm.startBroadcast();
         // The randomness source is a separate contract (Ticket 4.4 §1.3): the only

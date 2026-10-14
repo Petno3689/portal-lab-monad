@@ -75,8 +75,10 @@ contract PreviewScenarios {
     /// @dev Game hours of absence long enough for the deterministic long-absence
     /// overflow (SPEC §5.5) to fill the lab and end the run with no word at all.
     uint32 private constant HOURS_ABANDONED = 200;
-    /// @dev Tries a draw-dependent scenario makes before giving up.
-    uint256 private constant ATTEMPTS = 24;
+    /// @dev Tries a draw-dependent scenario makes before giving up. (Raised 24 -> 96
+    /// with epochHours 36: the blind-empty draw of state 7 needs a Resonant/Energetic
+    /// newborn with a zero creature count, which the new epoch indices made rarer.)
+    uint256 private constant ATTEMPTS = 96;
 
     /// @notice A required state could not be produced by real calls within
     /// `ATTEMPTS` tries. Raised instead of writing the state by hand.
@@ -340,20 +342,31 @@ contract PreviewScenarios {
         for (uint256 a = 0; a < ATTEMPTS; a++) {
             address player = _addr(state, a);
             _startAndLive(player, HOURS_ONE_PORTAL);
-            for (uint8 slot = 0; slot < MAX_OPEN_PORTALS; slot++) {
-                if (lab.getPortals(player)[slot].status == PortalStatus.Empty) continue;
-                if (lab.canAct(player, slot, Action.SendRescuer) != Refusal.None) continue;
-                vm.prank(player);
-                lab.act(slot, Action.SendRescuer);
-                if (lab.getPending(player).active) lab.reveal(player);
-                if (lab.getGame(player).rescuerReadyAt0 != 0) return player;
-                if (lab.canAct(player, slot, Action.RecallRescuer) == Refusal.None) {
-                    vm.prank(player);
-                    lab.act(slot, Action.RecallRescuer);
-                }
-            }
+            // Each try runs in its own call frame (an external self-call), so its
+            // memory is released: ATTEMPTS iterations of `getPortals` in one frame
+            // exhaust the script's memory (MemoryOOG).
+            if (this.tryRecovering(player)) return player;
         }
         revert ScenarioUnreachable(state);
+    }
+
+    /// @dev One try of `_rescuerRecovering`, in a frame of its own. Only `this`
+    /// may call it.
+    function tryRecovering(address player) external returns (bool) {
+        require(msg.sender == address(this), "PreviewScenarios: internal");
+        for (uint8 slot = 0; slot < MAX_OPEN_PORTALS; slot++) {
+            if (lab.getPortals(player)[slot].status == PortalStatus.Empty) continue;
+            if (lab.canAct(player, slot, Action.SendRescuer) != Refusal.None) continue;
+            vm.prank(player);
+            lab.act(slot, Action.SendRescuer);
+            if (lab.getPending(player).active) lab.reveal(player);
+            if (lab.getGame(player).rescuerReadyAt0 != 0) return true;
+            if (lab.canAct(player, slot, Action.RecallRescuer) == Refusal.None) {
+                vm.prank(player);
+                lab.act(slot, Action.RecallRescuer);
+            }
+        }
+        return false;
     }
 
     /// @dev First open portal fit for a survey. `needCreatures` demands a type

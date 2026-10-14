@@ -188,6 +188,7 @@ export function configFromJson(o: Json): Config {
         rangeWidenPerHour: big(o, "rangeWidenPerHour"),
         epochHours: big(o, "epochHours"),
         requestTimeoutHours: big(o, "requestTimeoutHours"),
+        outsiderTimeoutHours: big(o, "outsiderTimeoutHours"),
     };
 }
 

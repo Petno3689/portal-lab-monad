@@ -123,7 +123,8 @@ library VectorCodec {
             kv("closePressureBonus", c.closePressureBonus), ",",
             kv("rangeWidenPerHour", c.rangeWidenPerHour), ",",
             kv("epochHours", c.epochHours), ",",
-            kv("requestTimeoutHours", c.requestTimeoutHours)
+            kv("requestTimeoutHours", c.requestTimeoutHours), ",",
+            kv("outsiderTimeoutHours", c.outsiderTimeoutHours)
         );
         return string.concat("{", a, ",", b, ",", d, "}");
     }
@@ -425,6 +426,7 @@ library VectorCodec {
         uint256[] memory rangeWidenPerHour = _u(json, path, "rangeWidenPerHour");
         uint256[] memory epochHours = _u(json, path, "epochHours");
         uint256[] memory requestTimeoutHours = _u(json, path, "requestTimeoutHours");
+        uint256[] memory outsiderTimeoutHours = _u(json, path, "outsiderTimeoutHours");
         for (uint256 i = 0; i < out.length; i++) {
             Config memory c = out[i];
             c.closeStabilityBelow = uint8(closeStabilityBelow[i]);
@@ -436,6 +438,7 @@ library VectorCodec {
             c.rangeWidenPerHour = uint8(rangeWidenPerHour[i]);
             c.epochHours = uint16(epochHours[i]);
             c.requestTimeoutHours = uint16(requestTimeoutHours[i]);
+            c.outsiderTimeoutHours = uint16(outsiderTimeoutHours[i]);
         }
     }
 

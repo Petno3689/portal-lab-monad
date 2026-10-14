@@ -220,6 +220,10 @@ contract PortalLab is IRandomConsumer {
         if (cfg.epochHours == 0) revert InvalidConfig("epochHours");
         // A zero timeout would let anyone cancel a deferral the instant it is made.
         if (cfg.requestTimeoutHours == 0) revert InvalidConfig("requestTimeoutHours");
+        // Strangers must wait at least as long as the player (and so > 0).
+        if (cfg.outsiderTimeoutHours == 0 || cfg.outsiderTimeoutHours < cfg.requestTimeoutHours) {
+            revert InvalidConfig("outsiderTimeoutHours");
+        }
         if (cfg.closeStabilityBelow > 100) revert InvalidConfig("closeStabilityBelow");
         // A rescued creature must not be worth more HP than a lost one — a blunt
         // guard on the balance requirement (SPEC §4.4).
@@ -910,8 +914,10 @@ contract PortalLab is IRandomConsumer {
     }
 
     /// @notice Cancel a deferral whose random word never arrived (Ticket 4.7).
-    /// Callable by ANYONE for any player, once `requestTimeoutHours` of REAL time
-    /// have passed since the commit.
+    /// The player may cancel their own deferral once `requestTimeoutHours` of REAL
+    /// time have passed since the commit; anyone else only after the longer
+    /// `outsiderTimeoutHours`, so a stranger cannot grief a player whose word is
+    /// merely slow (the provider fee is lost on cancel).
     /// @dev The clock is `block.timestamp - committedAt`, NOT game hours. An
     /// epoch-crossing deferral is stuck precisely because the world cannot age
     /// past the pinned edge, so game hours are frozen then; a game-hour timeout
@@ -930,7 +936,8 @@ contract PortalLab is IRandomConsumer {
         if (!pend.active) revert NoPendingAction();
 
         Config memory c = _config;
-        uint256 availableAt = uint256(pend.committedAt) + uint256(c.requestTimeoutHours) * uint256(c.secPerHour);
+        uint256 waitHours = msg.sender == player ? c.requestTimeoutHours : c.outsiderTimeoutHours;
+        uint256 availableAt = uint256(pend.committedAt) + waitHours * uint256(c.secPerHour);
         if (block.timestamp <= availableAt) revert RequestNotTimedOut(availableAt + 1);
 
         // Every path brings the world up to date, like every other mutating entry

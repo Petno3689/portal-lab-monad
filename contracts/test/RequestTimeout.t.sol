@@ -45,7 +45,8 @@ contract RequestTimeoutTest is Test {
     uint40 internal constant BASE = 1_000_000;
     uint32 internal SPH;
     uint32 internal EPH;
-    uint256 internal TIMEOUT; // seconds
+    uint256 internal TIMEOUT; // seconds, the player's own timeout
+    uint256 internal OUTSIDER_TIMEOUT; // seconds, what a stranger must wait
 
     receive() external payable {}
 
@@ -57,6 +58,7 @@ contract RequestTimeoutTest is Test {
         SPH = c.secPerHour;
         EPH = c.epochHours;
         TIMEOUT = uint256(c.requestTimeoutHours) * SPH;
+        OUTSIDER_TIMEOUT = uint256(c.outsiderTimeoutHours) * SPH;
         vm.warp(BASE);
     }
 
@@ -195,11 +197,64 @@ contract RequestTimeoutTest is Test {
 
     function test_6_6_StrangerCanCancel() public {
         _commit(Action.SendObserver, 50);
-        vm.warp(BASE + TIMEOUT + 1);
+        vm.warp(BASE + OUTSIDER_TIMEOUT + 1);
         vm.prank(address(0xBEEF));
         harness.cancelDeferred(player);
         assertFalse(harness.getPending(player).active);
         assertEq(harness.getGame(player).observersFree, 3);
+    }
+
+    /// A stranger past the PLAYER's timeout but before the outsider's is refused.
+    function test_6_6a_StrangerAtPlayerTimeoutPlusOne_Reverts() public {
+        _commit(Action.SendObserver, 50);
+        vm.warp(BASE + TIMEOUT + 1);
+        vm.prank(address(0xBEEF));
+        vm.expectRevert(
+            abi.encodeWithSelector(PortalLab.RequestNotTimedOut.selector, uint256(BASE) + OUTSIDER_TIMEOUT + 1)
+        );
+        harness.cancelDeferred(player);
+        assertTrue(harness.getPending(player).active, "deferral untouched");
+    }
+
+    /// Exactly at the outsider deadline: refused; one second later: allowed.
+    function test_6_6b_StrangerOutsiderDeadlineBoundary() public {
+        _commit(Action.SendObserver, 50);
+        uint256 firstOk = uint256(BASE) + OUTSIDER_TIMEOUT + 1;
+        vm.warp(BASE + OUTSIDER_TIMEOUT);
+        vm.prank(address(0xBEEF));
+        vm.expectRevert(abi.encodeWithSelector(PortalLab.RequestNotTimedOut.selector, firstOk));
+        harness.cancelDeferred(player);
+
+        vm.warp(firstOk);
+        vm.prank(address(0xBEEF));
+        harness.cancelDeferred(player);
+        assertFalse(harness.getPending(player).active);
+    }
+
+    /// The player is not held to the outsider timeout.
+    function test_6_6c_PlayerCancelsAtPlayerTimeoutPlusOne() public {
+        _commit(Action.SendObserver, 50);
+        vm.warp(BASE + TIMEOUT + 1);
+        vm.prank(player);
+        harness.cancelDeferred(player);
+        assertFalse(harness.getPending(player).active);
+    }
+
+    function test_ConstructorRejectsZeroOutsiderTimeout() public {
+        Config memory c = DefaultConfig.config();
+        c.outsiderTimeoutHours = 0;
+        DeterministicSource src = new DeterministicSource(0);
+        vm.expectRevert(abi.encodeWithSelector(PortalLab.InvalidConfig.selector, "outsiderTimeoutHours"));
+        new PortalLab(c, DefaultConfig.portalTypeParams(), src);
+    }
+
+    function test_ConstructorRejectsOutsiderBelowPlayerTimeout() public {
+        Config memory c = DefaultConfig.config();
+        c.requestTimeoutHours = 5;
+        c.outsiderTimeoutHours = 4;
+        DeterministicSource src = new DeterministicSource(0);
+        vm.expectRevert(abi.encodeWithSelector(PortalLab.InvalidConfig.selector, "outsiderTimeoutHours"));
+        new PortalLab(c, DefaultConfig.portalTypeParams(), src);
     }
 
     /// The trap: game hours stand still while a crossing is stuck, so only real

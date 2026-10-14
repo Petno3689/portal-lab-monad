@@ -368,17 +368,28 @@ contract GenSpawnVectors is Script {
         n = _add(vs, n, "death: twelve open, the overflow drains inside the window", g, 1, 0, 1, 1, _tsOf(2, SPH));
         _fill(vs, n, 12);
 
-        // Twelve already open and the clock far past the edge (hour 11): the rule
+        // Twelve already open and the clock far past the edge (hour 35): the rule
         // beyond the edge fills a lab, it does not drain a full one, so it is not
-        // considered and the run survives at the edge (hp 100 - 11 * 5 = 45).
+        // considered and the run survives at the edge. The world stands at hour 30
+        // (not 0): from hour 0 the 35 hours to the edge would drain 175 hp and kill
+        // the run INSIDE the window, which is a different case. Five hours of drain
+        // leave hp 100 - 5 * 5 = 75.
         g = _g();
         g.hp = 100;
+        g.lastTickAt = _tsOf(30, SPH);
+        g.hoursElapsed = 30;
         n = _add(vs, n, "death: not considered beyond the edge, twelve are open there", g, 1, 0, 1, 1, _tsOf(60, SPH));
         _fill(vs, n, 12);
 
         // Overflow off, the clock past the edge: a full lab costs nothing, so there
         // is nothing to die of beyond it.
-        n = _add(vs, n, "death: not considered, hpOverflowPerHour is zero", _g(), 2, 1, 1, 1, _tsOf(20, SPH));
+        // (hNow 60, not 20: the edge is hour 35 now, so 20 is still inside the window;
+        // the world stands at hour 30 so the walk to the edge is short and the run
+        // is not killed by collapses inside the window.)
+        g = _g();
+        g.lastTickAt = _tsOf(30, SPH);
+        g.hoursElapsed = 30;
+        n = _add(vs, n, "death: not considered, hpOverflowPerHour is zero", g, 2, 1, 1, 1, _tsOf(60, SPH));
 
         // A portal that costs nothing: no birth is ever made (it would be endless),
         // and beyond the edge `needed` is zero, so the abandoned lab dies.

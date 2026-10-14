@@ -94,18 +94,22 @@ contract DeferredCancelTest is Test {
         assertTrue(harness.getPending(player).active, "action deferred at epoch edge");
         uint64 reqId = harness.getPending(player).requestId;
 
-        // Warp to hour EPH + 1 (epoch 1) for the reveal.
-        vm.warp(BASE + uint256(EPH + 1) * SPH);
+        // Warp to hour 13 for the reveal: after the first birth (hour 10, slot 0)
+        // and before the second (hour 20), which would otherwise refill slot 1
+        // (it was EPH + 1 = 13 with epochHours 12; at 36 the reveal hour 37 sees
+        // two births and the slot is occupied again).
+        uint32 revealHour = 13;
+        vm.warp(BASE + uint256(revealHour) * SPH);
 
         vm.expectEmit(true, true, false, true);
         emit PortalLab.DeferredActionCancelled(
-            player, 1, Action.ToggleQuestioned, Refusal.PortalEmpty, reqId, EPH + 1
+            player, 1, Action.ToggleQuestioned, Refusal.PortalEmpty, reqId, revealHour
         );
         source.reveal(reqId);
 
         // Deferral resolved; world advanced to the reveal hour.
         assertFalse(harness.getPending(player).active, "deferral resolved");
-        assertEq(harness.getGame(player).hoursElapsed, EPH + 1, "world advanced to reveal hour");
+        assertEq(harness.getGame(player).hoursElapsed, revealHour, "world advanced to reveal hour");
         // The collapse happened: slot 1 is now empty (plus one new spawn at slot 0).
         assertEq(uint8(harness.getPortals(player)[1].status), uint8(PortalStatus.Empty), "slot 1 empty after collapse");
     }
@@ -216,7 +220,7 @@ contract DeferredCancelTest is Test {
         Game memory g;
         g.startedAt = BASE;
         g.lastTickAt = BASE;
-        g.hp = 100;
+        g.hp = 60_000; // durable: a 100-hp empty lab dies at hour 49, before 2 * EPH = 72
         g.power = 100;
         g.observersFree = 3;
         g.rescuersFree = 2;

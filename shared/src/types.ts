@@ -206,4 +206,5 @@ export interface Config {
     // spawn entropy
     epochHours: bigint;
     requestTimeoutHours: bigint;
+    outsiderTimeoutHours: bigint;
 }

@@ -302,8 +302,11 @@ contract BirthAtMaturityTest is Test {
     /// compared instead, and the stored snapshot is checked to be the sync's stamp.
     function test_PreviewStability() public {
         _seed(4); // empty lab: births at hours 10, 20, 30, 40
-        uint40 t1 = _ts(25) + 7;
-        uint40 t2 = _ts(33) + 2;
+        // Under the epochHours-36 draws the two portals born at 10 and 20 collapse
+        // at hours 26 and 27, so the window sits at hours 21..24 (it was 25..33):
+        // setup only, the comparison is untouched.
+        uint40 t1 = _ts(21) + 7;
+        uint40 t2 = _ts(24) + 2;
 
         vm.warp(t1);
         (, Portal[MAX_OPEN_PORTALS] memory shown,) = harness.preview(player);

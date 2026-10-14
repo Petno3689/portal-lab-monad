@@ -51,10 +51,12 @@ library GameConfig {
         c.closePressureBonus = 2500;
         // survey / knowledge decay
         c.rangeWidenPerHour = 1;
-        // spawn entropy — one random word pinned per 12 game-hour epoch (Ticket 4.5).
-        c.epochHours = 12;
-        // a deferral stuck this long (real time) can be cancelled by anyone (Ticket 4.7).
+        // spawn entropy — one random word pinned per 36 game-hour epoch (Ticket 4.5).
+        c.epochHours = 36;
+        // a deferral stuck this long (real time) can be cancelled by its player (Ticket 4.7);
+        // anyone else must wait the longer outsider timeout (40 h = 10 real minutes).
         c.requestTimeoutHours = 1;
+        c.outsiderTimeoutHours = 40;
     }
 
     /// @notice Canonical per-type parameters, one per `PortalType`, in enum order.

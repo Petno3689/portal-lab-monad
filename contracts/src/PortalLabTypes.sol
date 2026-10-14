@@ -390,9 +390,16 @@ struct Config {
     /// (closePressureBonus 4 + rangeWiden 1 + deafNarrow 1 + epochHours 2 = 8 of
     /// 32 bytes); Config stays at three slots. Validated `> 0` at deploy.
     uint16 epochHours;
-    /// @dev Game hours after a deferral's commit at which anyone may cancel it
-    /// (Ticket 4.7). Measured in REAL time (`block.timestamp`), not game hours.
-    /// Packs into Config slot 2 after epochHours; Config stays at three slots.
-    /// Validated `> 0` at deploy.
+    /// @dev Game hours after a deferral's commit at which the PLAYER may cancel
+    /// their own deferral (Ticket 4.7). Measured in REAL time (`block.timestamp`),
+    /// not game hours. Packs into Config slot 2 after epochHours; Config stays at
+    /// three slots. Validated `> 0` at deploy.
     uint16 requestTimeoutHours;
+    /// @dev Game hours after a deferral's commit at which ANYONE ELSE may cancel
+    /// it; longer than `requestTimeoutHours`, so a stranger cannot grief a player
+    /// whose Pyth word is merely slow. Packs into Config slot 2 after
+    /// requestTimeoutHours (epochHours 2 + requestTimeoutHours 2 + this 2 + the
+    /// 6 bytes before them = 12 of 32); Config stays at three slots. Validated
+    /// `>= requestTimeoutHours` (hence `> 0`) at deploy.
+    uint16 outsiderTimeoutHours;
 }

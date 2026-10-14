@@ -576,9 +576,16 @@ function resultMessage(done: Pending | null, s: ChainState, before: ChainState |
   const slot = Number(done.slot);
   const p = s.portals[slot];
   if (done.action === Action.SendObserver) {
-    return p.surveyed
-      ? `Survey of slot ${slot}: energy ${p.energy}, stability ${p.stability}, creatures ${p.creatures}`
-      : `Survey of slot ${slot} cancelled (portal collapsed or game over)`;
+    if (p.surveyed) {
+      return `Survey of slot ${slot}: energy ${p.energy}, stability ${p.stability}, creatures ${p.creatures}`;
+    }
+    const prev = before?.portals[slot];
+    const samePortal = !!prev && prev.status !== 0 && p.status !== 0 && prev.id === p.id;
+    // Deaf portal type is 2 (PortalType.Deaf)
+    if (samePortal && p.portalType === 2) {
+      return `Survey of slot ${slot} narrowed the ranges — a Deaf portal needs more surveys to read exact`;
+    }
+    return `Survey of slot ${slot} cancelled (portal collapsed or game over)`;
   }
   if (done.action === Action.SendRescuer) {
     return p.creaturesKnown

@@ -47,9 +47,11 @@ each other's assumptions.
 
 One game hour is fifteen real seconds, and the world ages lazily: whenever
 the contract is next touched, it computes the whole elapsed span in closed
-form. A player therefore signs a transaction every few seconds, and almost
-every one of them carries both a Pyth Entropy request and a catch-up over
-the game hours that passed while the transaction was in flight.
+form. A player therefore signs a transaction every few seconds, and every
+one of them carries a catch-up over the game hours that passed while the
+transaction was in flight. A Pyth Entropy request is made only when needed:
+by a survey, a blind rescuer entry, or an action that crosses into a new
+epoch (one random word per 12 game hours, i.e. 3 real minutes).
 
 That shape only works where blocks are fast and gas is cheap. On a slower
 chain the clock outruns the blocks: the world a player acts on is already

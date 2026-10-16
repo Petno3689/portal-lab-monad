@@ -101,7 +101,7 @@ contract PortalLabTest is Test {
         Game memory g = lab.getGame(address(this));
         assertEq(g.startedAt, 5000);
         assertEq(g.lastTickAt, 5000);
-        assertEq(g.hp, 50);  // hpStart, not hpMax
+        assertEq(g.hp, 80);  // hpStart, not hpMax
         assertEq(g.power, 100);
         assertEq(g.observersFree, 3);
         assertEq(g.rescuersFree, 2);

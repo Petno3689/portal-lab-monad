@@ -130,7 +130,7 @@ contract DeferredCancelTest is Test {
         p.snapshotAt = BASE;
         p.hoursToCollapse = 1;
         p.creaturesKnown = true;
-        p.creatures = 2; // hpLost = 20 + 10*2 = 40
+        p.creatures = 2; // hpLost = 20 + 8*2 = 36
         p.creaturesLo = 2;
         p.creaturesHi = 2;
         harness.setPortal(player, 0, p);

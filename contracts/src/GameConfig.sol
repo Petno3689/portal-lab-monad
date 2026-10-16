@@ -16,9 +16,9 @@ library GameConfig {
         c.longAbsenceHours = 20;
         // HP
         c.hpMax = 100;
-        c.hpStart = 50;
+        c.hpStart = 80;
         c.hpCollapseBase = 20;
-        c.hpCollapsePerDeath = 10;
+        c.hpCollapsePerDeath = 8;
         c.hpEmptyCollapse = 3;
         c.hpOverflowPerHour = 5;
         c.healPerCreature = 3;
@@ -46,7 +46,7 @@ library GameConfig {
         // A fresh lab accrues ~one portal's worth of pressure per ten game hours,
         // the ramp speeds that up over the run, and closing grants 1/4 of a portal.
         c.basePressurePerHour = 1000;
-        c.pressureRampPerHour = 1;
+        c.pressureRampPerHour = 2;
         c.spawnCostUnits = 10_000;
         c.closePressureBonus = 2500;
         // survey / knowledge decay

@@ -21,16 +21,16 @@ contract SpawnHarness is PortalLabHarness {
 /// built fresh by helpers (never assigned by copy — CLAUDE.md rule).
 ///
 /// `DefaultConfig` (all placeholders): secPerHour 15, MAX_OPEN_PORTALS 12,
-/// maxSpawnsPerTx 3, basePressurePerHour 1000, pressureRampPerHour 1,
+/// maxSpawnsPerTx 3, basePressurePerHour 1000, pressureRampPerHour 2,
 /// spawnCostUnits 10_000, closePressureBonus 2500, hpMax 100,
 /// hpOverflowPerHour 5. Pressure over game hours [a,b) is the closed form
 ///   base*(b-a) + ramp*((a+b-1)*(b-a))/2.
 /// Handy values used below:
-///   P(0,10)  = 10_000 + (9*10)/2      = 10_045
-///   P(0,100) = 100_000 + (99*100)/2   = 104_950
-///   P(0,113) = 113_000 + (112*113)/2  = 119_328  (< 120_000)
-///   P(0,114) = 114_000 + (113*114)/2  = 120_441  (>= 120_000)
-///   672 + P(0,113) = 120_000 exactly
+///   P(0,10)  = 10_000 + 2*(9*10)/2      = 10_090
+///   P(0,100) = 100_000 + 2*(99*100)/2   = 109_900
+///   P(0,108) = 108_000 + 2*(107*108)/2  = 119_556  (< 120_000)
+///   P(0,109) = 109_000 + 2*(108*109)/2  = 120_772  (>= 120_000)
+///   444 + P(0,108) = 120_000 exactly
 contract SpawnTest is Test {
     SpawnHarness internal harness;
     address internal player;
@@ -83,7 +83,7 @@ contract SpawnTest is Test {
     function test_FirstPortalAppearsOnTime() public {
         harness.setGame(player, _g()); // empty lab, spawnDebt 0
 
-        // P(0,10) = 10_045 >= spawnCostUnits(10_000) and < 20_000 → exactly 1.
+        // P(0,10) = 10_000 + 2*45 = 10_090 >= spawnCostUnits(10_000) and < 20_000 → exactly 1.
         _warpHours(10);
         vm.expectEmit(true, true, false, false); // check player + slot, ignore data
         emit PortalLab.PortalSpawned(player, 0, PortalType.Flash, 0, 10);
@@ -92,7 +92,7 @@ contract SpawnTest is Test {
         assertEq(_game_().openPortals, 1, "one portal");
         assertEq(_game_().spawnCount, 1, "one spawn counted");
         assertEq(uint8(_portal_(0).status), uint8(PortalStatus.Open), "slot 0 open");
-        assertEq(_game_().spawnDebt, 45, "10_045 - 10_000 spent");
+        assertEq(_game_().spawnDebt, 90, "10_090 - 10_000 spent");
     }
 
     // ── Group 2: The closed form equals a reference loop ──────────────────────
@@ -102,15 +102,15 @@ contract SpawnTest is Test {
         // never loop over hours (SPEC §7).
         uint256 loopSum = 0;
         for (uint256 h = 0; h < 100; h++) {
-            loopSum += uint256(1000) + uint256(1) * h; // base + ramp*h
+            loopSum += uint256(1000) + uint256(2) * h; // base + ramp*h
         }
         assertEq(harness.spawnPressure(0, 100), loopSum, "P(0,100) closed form");
-        assertEq(harness.spawnPressure(0, 100), 104_950, "P(0,100) literal");
+        assertEq(harness.spawnPressure(0, 100), 109_900, "P(0,100) literal"); // 100_000 + 2*4_950
 
         // An offset window too, to catch an `a`-independent formula.
         uint256 loopOff = 0;
         for (uint256 h = 50; h < 150; h++) {
-            loopOff += uint256(1000) + uint256(1) * h;
+            loopOff += uint256(1000) + uint256(2) * h;
         }
         assertEq(harness.spawnPressure(50, 150), loopOff, "P(50,150) closed form");
     }
@@ -118,8 +118,8 @@ contract SpawnTest is Test {
     // ── Group 3: Difficulty ramps up ──────────────────────────────────────────
 
     function test_DifficultyRampsUp() public view {
-        uint256 firstHundred = harness.spawnPressure(0, 100); // 104_950
-        uint256 secondHundred = harness.spawnPressure(100, 200); // 114_950
+        uint256 firstHundred = harness.spawnPressure(0, 100); // 109_900
+        uint256 secondHundred = harness.spawnPressure(100, 200); // 129_900
         assertGt(secondHundred, firstHundred, "later hours accrue more pressure");
     }
 
@@ -127,8 +127,8 @@ contract SpawnTest is Test {
 
     /// One call after 25 hours: the k-th portal is born at the first hour the
     /// pressure reaches k * spawnCostUnits — hours 10 and 20 — not at hour 25,
-    /// and there is no per-call cap. P(0,10) = 10_045, P(0,20) = 20_190,
-    /// P(0,25) = 25_300, so 5_300 is left over.
+    /// and there is no per-call cap. P(0,10) = 10_090, P(0,20) = 20_380,
+    /// P(0,25) = 25_600, so 5_600 is left over.
     function test_BirthsHappenAtMaturity() public {
         harness.setGame(player, _g()); // empty lab, spawnDebt 0
 
@@ -148,14 +148,16 @@ contract SpawnTest is Test {
         }
         assertEq(n, 2, "two births");
         assertEq(_game_().spawnCount, 2, "two counted");
-        assertEq(_game_().spawnDebt, 25_300 - 20_000, "the remainder stays in the debt");
+        assertEq(_game_().spawnDebt, 25_600 - 20_000, "the remainder stays in the debt");
     }
 
-    /// The `>=` of the maturity rule, pinned at equality: 4_990 + P(0,5) = 4_990 +
-    /// 5_010 = 10_000 exactly, so the portal is born at hour 5, not hour 6.
+    /// The `>=` of the maturity rule, pinned at equality: 4_980 + P(0,5) = 4_980 +
+    /// 5_020 = 10_000 exactly, so the portal is born at hour 5, not hour 6.
+    /// The hour before stays below: 4_980 + P(0,4) = 4_980 + 4_012 = 8_992 < 10_000.
+    /// (P(0,5) = 5_000 + 2*(4*5)/2 = 5_020; P(0,4) = 4_000 + 2*(3*4)/2 = 4_012.)
     function test_BirthAtExactMaturityBoundary() public {
         Game memory g = _g();
-        g.spawnDebt = 4990;
+        g.spawnDebt = 4980;
         harness.setGame(player, g);
 
         _warpHours(8);
@@ -184,8 +186,8 @@ contract SpawnTest is Test {
         assertEq(_portal_(0).spawnedAtHour, 12, "born at the collapse that freed the slot");
         assertEq(_portal_(0).id, 1, "the newborn took the freed slot");
         assertEq(_game_().openPortals, 12, "full again");
-        // 10_000 + P(0,15) - 10_000 = P(0,15) = 15_000 + (14*15)/2 = 15_105.
-        assertEq(_game_().spawnDebt, 15_105, "the second portal's pressure keeps waiting");
+        // 10_000 + P(0,15) - 10_000 = P(0,15) = 15_000 + 2*(14*15)/2 = 15_210.
+        assertEq(_game_().spawnDebt, 15_210, "the second portal's pressure keeps waiting");
         assertEq(_game_().hp, 22, "overflow, collapse, overflow");
     }
     // ── Group 6: The lab cap blocks spawns and spends nothing ─────────────────
@@ -325,9 +327,9 @@ contract SpawnTest is Test {
         _warpHours(5);
         harness.sync(player);
 
-        // Only time accrual, P(0,5) = 5000 + (4*5)/2 = 5010. A Close would have
+        // Only time accrual, P(0,5) = 5000 + 2*(4*5)/2 = 5020. A Close would have
         // added closePressureBonus (2500) on top; a collapse must not.
-        assertEq(_game_().spawnDebt, 5010, "collapse adds no close bonus");
+        assertEq(_game_().spawnDebt, 5020, "collapse adds no close bonus");
         assertEq(_game_().openPortals, 0, "collapsed slot freed");
     }
 
@@ -340,14 +342,14 @@ contract SpawnTest is Test {
         harness.sync(player);
 
         // The abandoned lab is walked event by event: portals are born at their
-        // maturity hours (10, 20, 30, 40 — the fifth, due at 49, finds the run
+        // maturity hours (10, 20, 30, 39 — the fifth, due at 48, finds the run
         // already dead) and newborns collapse; the lethal collapse falls at hour
-        // 49 under this harness word. The types and lifetimes of the newborns come
-        // from epochSeed(word, hour / epochHours); with epochHours 36 (it was 12)
-        // the same births draw different portals, hence different collapse hours
-        // (57 -> 49). The old analytic fill-and-overflow put death at 134.
+        // 48 under this harness word: collapses at hours 16, 47 and 48 cost
+        // 36 + 28 + 36 = 100 hp, so hp reaches exactly 0 at the third. The types
+        // and lifetimes of the newborns come from epochSeed(word, hour / epochHours);
+        // the old analytic fill-and-overflow put death at 134.
         assertTrue(_game_().finished, "game over");
-        assertEq(_game_().diedAtHour, 49, "death at the hour of the lethal collapse");
+        assertEq(_game_().diedAtHour, 48, "death at the hour of the lethal collapse");
         assertLt(_game_().diedAtHour, 10_000, "far short of the pause");
         assertEq(_game_().hp, 0, "hp zeroed");
         assertEq(_game_().openPortals, 1, "portals open at death");
@@ -369,10 +371,10 @@ contract SpawnTest is Test {
         _warpHours(200);
         harness.sync(player);
 
-        // Hand-computed: needed 120_000, P(0,113)=119_328 < 120_000 <= 120_441
-        // =P(0,114) → hFill = 114. diedAtHour = 114 + 12 = 126.
+        // Hand-computed: needed 120_000, P(0,108)=119_556 < 120_000 <= 120_772
+        // =P(0,109) → hFill = 109. diedAtHour = 109 + 12 = 121.
         assertTrue(_game_().finished);
-        assertEq(_game_().diedAtHour, 126, "hFill 114 + ceil(60/5) 12");
+        assertEq(_game_().diedAtHour, 121, "hFill 109 + ceil(60/5) 12");
     }
 
     // ── Group 13: Gas — a long pause is not worse than twice a short one ───────
@@ -419,7 +421,7 @@ contract SpawnTest is Test {
     function test_PressureSaturates() public {
         // Full lab, no collapse in the window, hp enough for the overflow: nothing
         // is born or spent, so the debt just accrues and must saturate, not wrap.
-        // 100 hp - 10 h * 5 overflow = 50 survives; P(0,10) = 10_045 > the 100 left.
+        // 100 hp - 10 h * 5 overflow = 50 survives; P(0,10) = 10_090 > the 100 left.
         _fillTwelve(100, uint32(SPAWN_DEBT_MAX - 100));
 
         _warpHours(10);
@@ -471,22 +473,22 @@ contract SpawnTest is Test {
     // ── Group 16: Exact boundary of fill hour predicate ───────────────────────
 
     /// This test pinpoints the exact boundary between ">= needed" and "> needed"
-    /// in TimeLib._fillHour. At P(0,113) = 119_328 and spawnDebt = 672, the sum
+    /// in TimeLib._fillHour. At P(0,108) = 119_556 and spawnDebt = 444, the sum
     /// equals 120_000 (needed) exactly. Without this test, the predicate can be
     /// incorrectly weakened to "> needed" and all 178 tests still pass.
     function test_FillHourExactBoundary() public {
         Game memory g = _g();
         g.hp = 60; // ceil(60/5) = 12 overflow hours to death
-        g.spawnDebt = 672;
+        g.spawnDebt = 444;
         harness.setGame(player, g);
         harness.setCoverage(player, harness.epochWordOf(player), 0); // nothing pinned: beyond the edge
 
         _warpHours(200);
         harness.sync(player);
 
-        // Exact: 672 + P(0,113) = 672 + 119_328 = 120_000 = needed.
-        // hFill = 113, diedAtHour = 113 + 12 = 125.
+        // Exact: 444 + P(0,108) = 444 + 119_556 = 120_000 = needed.
+        // hFill = 108, diedAtHour = 108 + 12 = 120.
         assertTrue(_game_().finished);
-        assertEq(_game_().diedAtHour, 125, "hFill 113 + ceil(60/5) 12");
+        assertEq(_game_().diedAtHour, 120, "hFill 108 + ceil(60/5) 12");
     }
 }

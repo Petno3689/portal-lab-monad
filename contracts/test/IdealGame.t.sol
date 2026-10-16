@@ -248,13 +248,13 @@ contract IdealGameTest is Test {
         //       maxRemovalPerHour = maxIncome * netPerClose / costClose
         //                         = 53 * 7_500 / 25 = 15_900
         //       H                 = (maxRemovalPerHour - basePressurePerHour) / pressureRampPerHour + 1
-        //                         = (15_900 - 1_000) / 1 + 1 = 14_901
+        //                         = (15_900 - 1_000) / 2 + 1 = 14_900 / 2 + 1 = 7_451
         //
         //       If DefaultConfig changes, recompute BOTH numbers BY HAND and re-enter.
         //       DO NOT copy what the test printed — that defeats the purpose of the anchor.
         assertEq(maxRemovalPerHour, 15_900,
             "ANCHOR: maxRemovalPerHour changed. Recompute from DefaultConfig by hand.");
-        assertEq(H, 14_901,
+        assertEq(H, 7_451,
             "ANCHOR: H changed. Recompute from DefaultConfig by hand.");
 
         // A11. H must fit in uint32 (the game hour type).
@@ -832,8 +832,8 @@ contract IdealGameTest is Test {
     ///
     /// WHY THIS POLICY (the economy it is derived from, all from DefaultConfig):
     ///   - empty collapse                 = hpEmptyCollapse (cheap, 3)
-    ///   - collapse with N beings         = hpCollapseBase + hpCollapsePerDeath*N (20 + 10N)
-    ///   - CLOSE with N creatures inside  = hpCollapsePerDeath*N (10N) + costClose power,
+    ///   - collapse with N beings         = hpCollapseBase + hpCollapsePerDeath*N (20 + 8N)
+    ///   - CLOSE with N creatures inside  = hpCollapsePerDeath*N (8N) + costClose power,
     ///                                      vs. evacuate = GAIN healPerCreature*N HP; close
     ///                                      is strictly worse when creatures > 0. NEVER do it.
     ///   - CLOSE with crew inside         = hpCollapsePerDeath per crew, crew lost forever.

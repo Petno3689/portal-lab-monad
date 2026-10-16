@@ -421,7 +421,7 @@ contract SurveyTest is Test {
         _write(durable, p0);
 
         vm.expectEmit(true, true, false, true);
-        emit PortalLab.PortalClosed(player, 0, 4, 40, 0); // deaths creaturesHi=4, hpLost 10*4=40
+        emit PortalLab.PortalClosed(player, 0, 4, 32, 0); // deaths creaturesHi=4, hpLost 8*4=32
         harness.act(0, Action.Close);
 
         // After 100 hours of widening the upper bound stays at 4 (creatures fixed).
@@ -434,7 +434,7 @@ contract SurveyTest is Test {
 
         _warpHours(100);
         vm.expectEmit(true, true, false, true);
-        emit PortalLab.PortalClosed(player, 0, 4, 40, 100);
+        emit PortalLab.PortalClosed(player, 0, 4, 32, 100);
         harness.act(0, Action.Close);
     }
 

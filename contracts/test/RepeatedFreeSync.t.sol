@@ -73,7 +73,7 @@ contract RepeatedFreeSyncTest is Test {
     }
 
     /// @dev hp 100 and 100 covered epochs are not reachable through real calls
-    /// (startGame gives hpStart 50; a word covers only the epochs up to its
+    /// (startGame gives hpStart 80; a word covers only the epochs up to its
     /// request), so this state is seeded with the harness setters.
     function _seed() internal {
         Game memory g;
@@ -109,20 +109,19 @@ contract RepeatedFreeSyncTest is Test {
 
     // ── 1. one free sync after a 113-hour absence ────────────────────────────
 
-    /// The abandoned lab filled and died long before the call: four portals were
-    /// born at their maturity hours (10, 20, 30, 40), newborns collapsed, and the
-    /// run ended at hour 49 (it was 57 with epochHours 12: the epoch index of a
-    /// birth hour changed, so the same word draws different lifetimes). Debt at
-    /// death: P(0,49) = 50_176, less 4 * 10_000.
+    /// The abandoned lab filled and died long before the call: five portals were
+    /// born at their maturity hours (10, 20, 30, 39, 48), newborns collapsed, and
+    /// the run ended at hour 53 (it was 49 before hpStart 80, hpCollapsePerDeath 8
+    /// and pressureRampPerHour 2). Debt at death: P(0,53) = 55_756, less 5 * 10_000.
     function test_OneFreeSyncAfter113Hours() public {
         _warpHours(113);
         harness.sync(player);
         Game memory g = _game();
         assertTrue(g.finished, "one sync: the abandoned lab is dead");
-        assertEq(uint256(g.diedAtHour), 49, "one sync: died at hour 49");
-        assertEq(uint256(g.spawnCount), 4, "one sync: four births");
+        assertEq(uint256(g.diedAtHour), 53, "one sync: died at hour 53");
+        assertEq(uint256(g.spawnCount), 5, "one sync: five births");
         assertEq(uint256(g.openPortals), 1, "one sync: portals open at death");
-        assertEq(uint256(g.spawnDebt), 10_176, "one sync: debt at the death hour");
+        assertEq(uint256(g.spawnDebt), 5_756, "one sync: debt at the death hour"); // 55_756 - 5*10_000
         assertEq(uint256(g.hp), 0, "one sync: hp");
     }
 
@@ -174,9 +173,9 @@ contract RepeatedFreeSyncTest is Test {
     function test_ScenarioA_NobodyInterferes() public {
         Game memory g = _scenarioA().g;
         assertTrue(g.finished, "A: dead by hour 153");
-        assertEq(uint256(g.diedAtHour), 49, "A: died at hour 49");
+        assertEq(uint256(g.diedAtHour), 53, "A: died at hour 53");
         assertEq(uint256(g.openPortals), 1, "A: portals open at death");
-        assertEq(uint256(g.spawnDebt), 10_176, "A: debt at the death hour");
+        assertEq(uint256(g.spawnDebt), 5_756, "A: debt at the death hour"); // 55_756 - 5*10_000
     }
 
     function test_ScenarioB_EqualsScenarioA() public {
@@ -194,7 +193,7 @@ contract RepeatedFreeSyncTest is Test {
         harness.sync(player);
         World memory first = _world();
         assertTrue(first.g.finished, "first sync ends the game");
-        assertEq(uint256(first.g.diedAtHour), 49, "died at hour 49");
+        assertEq(uint256(first.g.diedAtHour), 53, "died at hour 53");
 
         vm.startPrank(stranger);
         for (uint256 i = 0; i < 6; i++) {

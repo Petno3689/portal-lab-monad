@@ -225,8 +225,8 @@ contract RepeatedFreeSyncTest is Test {
 
     // ── 6. the former open hole: one outside sync at a chosen hour ───────────
 
-    /// Second stand, values the game itself produces: hp 50 (what startGame
-    /// gives), power 50, 3 observers, 2 rescuers, empty lab, word issued,
+    /// Second stand: hp 50 is a fixed scenario value (startGame gave 50 before
+    /// the 16 Oct rebalance and gives 80 now), power 50, 3 observers, 2 rescuers, empty lab, word issued,
     /// 12 covered epochs, started at BASE. The word stays pinned: it decides the
     /// types of the portals that drop and, through them, when they collapse.
     function _seedLethalStand() internal {

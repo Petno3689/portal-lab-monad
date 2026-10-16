@@ -35,7 +35,7 @@ contract SettleTest is Test {
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
-    /// @dev Minimal active game: started at BASE, hp 50 (hpStart), full crew.
+    /// @dev Minimal active game: started at BASE, hp 50 (a fixed test value, not hpStart since the 16 Oct rebalance), full crew.
     function _game() internal pure returns (Game memory g) {
         g.startedAt = BASE;
         g.lastTickAt = BASE;

@@ -70,7 +70,7 @@ contract PreviewScenarios {
     /// and the next one matures only at hour 10. Short of the first pinned epoch
     /// edge, so the resulting state can still be projected FORWARD. (It was 34
     /// while a per-call spawn cap existed; with births at maturity a 34-hour
-    /// absence lets the hand collapse and usually kills a 50-hp run.)
+    /// absence lets the hand collapse, and a run with startGame's hp can die.)
     uint32 private constant HOURS_FULL_HOUSE = 4;
     /// @dev Game hours of absence long enough for the deterministic long-absence
     /// overflow (SPEC §5.5) to fill the lab and end the run with no word at all.

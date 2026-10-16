@@ -13,6 +13,8 @@ library GameConfig {
     function config() internal pure returns (Config memory c) {
         // time
         c.secPerHour = 15;
+        // Unused since v2: a long absence is walked event by event (SPEC §5.5).
+        // Kept so Config's storage layout, the ABI and the golden vectors stay unchanged.
         c.longAbsenceHours = 20;
         // HP
         c.hpMax = 100;

@@ -56,8 +56,8 @@ contract EpochSpawnTest is Test {
     }
 
     /// @dev A started game made durable: hp 60_000 and nothing pinned. With
-    /// epochHours 36 the first edge is hour 35, and a 50-hp empty lab can die
-    /// before reaching it; these tests are about WHEN a word is fetched, not
+    /// epochHours 36 the first edge is hour 35, and a run with startGame's hp can
+    /// die before reaching it; these tests are about WHEN a word is fetched, not
     /// about surviving, so the run is given room (setup only, Ticket "36").
     function _startDurable() internal {
         harness.startGame();
@@ -106,8 +106,8 @@ contract EpochSpawnTest is Test {
 
     function test_OneAbsenceOneRequest() public {
         // A high-HP game with nothing pinned yet, so a twenty-epoch absence does
-        // not die to the deterministic overflow before we return (an empty lab from
-        // a 50-HP start would overflow around hour 124 — see §5.5 — which is why we
+        // not die to the deterministic overflow before we return (a run with
+        // startGame's HP can die before that point — see §5.5 — which is why we
         // seed a durable game here instead of relying on startGame's HP).
         Game memory g;
         g.startedAt = BASE;
@@ -148,9 +148,9 @@ contract EpochSpawnTest is Test {
 
     function test_FreeSyncAndSettleNeverRequest() public {
         _startDurable();
-        // A modest absence that does NOT reach the deterministic overflow (an empty
-        // 50-HP lab survives well past five epochs), so the game is genuinely
-        // unfinished at the pinned edge.
+        // A modest absence that does NOT reach the deterministic overflow (a run
+        // with startGame's HP can die before then, which is why the game is seeded
+        // durable), so the game is genuinely unfinished at the pinned edge.
         _warpHours(5 * EPH);
 
         // Unpaid sync: advances only to the pinned edge (none yet → stays put),
@@ -211,7 +211,7 @@ contract EpochSpawnTest is Test {
     function test_PastDoesNotChange() public {
         harness.startGame();
         // Portals are born at maturity while the player is away, and their
-        // collapses cost HP: a 50-HP start would die before the second word. Seed
+        // collapses cost HP: a run with startGame's HP can die before the second word. Seed
         // a durable lab so the property (a new word never re-rolls the past) is
         // what the test measures.
         Game memory seeded = _game();
@@ -346,7 +346,10 @@ contract EpochSpawnTest is Test {
     /// and holds enough debt to refill each freed slot immediately. A reviewer
     /// sweep over debt 0..200 000, collapse staggers 0..3 hours, absences of 1, 2
     /// and 20 epochs and three portal types peaked at about 595 000 gas, with this
-    /// debt and stagger. (The former stand had 60 000 hp: unreachable, and with
+    /// debt and stagger; that was under the config before 16 Oct. On 16 Oct
+    /// (hpStart 80, hpCollapsePerDeath 8, ramp 2) a 1 584-configuration sweep with
+    /// cold storage peaked at about 605 000, and this stand measures about 609 000.
+    /// (The former stand had 60 000 hp: unreachable, and with
     /// births at maturity it walks the full 64-event fuse.)
     function test_Gas_CrossingRevealWorstCase_UnderBudget() public {
         Game memory g;

@@ -856,6 +856,70 @@
     },
     {
       "type": "function",
+      "name": "leaderboardPage",
+      "inputs": [
+        {
+          "name": "offset",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "limit",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "players",
+          "type": "address[]",
+          "internalType": "address[]"
+        },
+        {
+          "name": "runs",
+          "type": "tuple[]",
+          "internalType": "struct BestRun[]",
+          "components": [
+            {
+              "name": "hoursSurvived",
+              "type": "uint32",
+              "internalType": "uint32"
+            },
+            {
+              "name": "creaturesRescued",
+              "type": "uint32",
+              "internalType": "uint32"
+            },
+            {
+              "name": "settledAt",
+              "type": "uint32",
+              "internalType": "uint32"
+            },
+            {
+              "name": "runsSettled",
+              "type": "uint32",
+              "internalType": "uint32"
+            }
+          ]
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "leaderboardSize",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
       "name": "portalTypeParams",
       "inputs": [
         {

@@ -1,10 +1,12 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { formatEther, isAddress, type Address } from 'viem';
 import { MONAD_CHAIN_ID, MONAD_RPC_URL } from './config';
-import { readPlayer, readPending, readFee, readCanAct, readBestRun, readDeferredOutcome, blockOf, sendTx, revertOf, type ChainState } from './contract';
+import { publicClient, readPlayer, readPending, readFee, readCanAct, readBestRun, readDeferredOutcome, blockOf, sendTx, revertOf, type ChainState } from './contract';
 import { preview } from '@shared/preview';
 import { catchUp } from '@shared/time';
-import { Action, Refusal, getRefusalMessage } from './types';
+import { Action, getRefusalMessage, getCancelReasonMessage, portalTypeNames } from './types';
+import { Journal } from './Journal';
+import { Leaderboard } from './Leaderboard';
 import type { Pending, BestRun } from '@shared/types';
 import './App.css';
 
@@ -166,7 +168,11 @@ function App() {
     setChain(parseInt(id as string, 16));
   };
 
+  // Bumped wherever the best run is re-read: the leaderboard re-reads at the same moments.
+  const [leaderboardTick, setLeaderboardTick] = useState(0);
+
   const refreshBestRun = useCallback((p: Address) => {
+    setLeaderboardTick((t) => t + 1);
     readBestRun(p).then(setBestRun).catch((error) => console.error('Failed to load best run:', error));
   }, []);
 
@@ -208,6 +214,8 @@ function App() {
       try {
         const p = await readPending(player);
         if (p.active || cancelled()) return;
+        // The outcome events are at or before this block.
+        const seenAt = await publicClient.getBlockNumber();
         const fresh = await readPlayer(player);
         if (cancelled()) return;
         setState(fresh);
@@ -216,7 +224,7 @@ function App() {
         const fromBlock = awaitedBlock.current;
         awaited.current = null;
         awaitedBlock.current = null;
-        const message = await resultMessage(done, fresh, stateRef.current, player, fromBlock);
+        const message = await resultMessage(done, fresh, stateRef.current, player, fromBlock, seenAt);
         if (cancelled()) return;
         setTxStatus({ pending: false, message });
       } catch (error) {
@@ -288,7 +296,6 @@ function App() {
     }
   };
 
-  const portalTypeNames = ['Flash', 'Long-lived', 'Deaf', 'Resonant', 'Energetic'];
   const game = projected?.game;
   const hasGame = !!game && game.startedAt !== 0n;
   // Seconds until the pending request can be cancelled (contract: block.timestamp > committedAt + timeout).
@@ -563,6 +570,8 @@ function App() {
             </div>
           )}
 
+          <Journal player={player} state={state} />
+
           <div className="game-controls">
             <button onClick={load}>Refresh</button>
             {projected.cappedShort && !game.finished && !state?.pending.active && (
@@ -598,6 +607,13 @@ function App() {
               <p>
                 This run is still alive. Starting a new game forfeits it WITHOUT recording it on the leaderboard.
               </p>
+              {projected.cappedShort && (
+                <p>
+                  The world is paused at the edge of its random word, so the contract cannot tell yet whether this
+                  lab has already fallen. Use "Sync (pays for word)" first: if the run ended while you were away, it
+                  will be recorded.
+                </p>
+              )}
               <button
                 onClick={async () => {
                   setConfirmNew(false);
@@ -612,6 +628,8 @@ function App() {
           )}
         </div>
       )}
+
+      <Leaderboard account={account} refreshKey={leaderboardTick} />
     </div>
   );
 }
@@ -622,6 +640,7 @@ async function resultMessage(
   before: ChainState | null,
   player: Address,
   fromBlock: bigint | null,
+  toBlock: bigint,
 ): Promise<string> {
   if (!done) return 'Random word received, state updated';
   if (done.syncOnly && before && before.game.hoursElapsed === 0n && before.game.openPortals === 0n && s.game.openPortals > 0n) {
@@ -647,13 +666,9 @@ async function resultMessage(
   const label = `Action ${Action[done.action]} on slot ${slot}`;
   if (fromBlock === null) return 'Random word received, state updated';
   try {
-    const out = await readDeferredOutcome(player, slot, done.action, fromBlock);
+    const out = await readDeferredOutcome(player, slot, done.action, fromBlock, toBlock);
     if (out.cancelledReason !== null) {
-      const why =
-        out.cancelledReason === Refusal.PortalEmpty
-          ? 'the portal is gone or was replaced'
-          : getRefusalMessage(out.cancelledReason);
-      return `${label} cancelled: ${why}`;
+      return `${label} cancelled: ${getCancelReasonMessage(out.cancelledReason)}`;
     }
     if (out.performed) return `${label} applied after the word arrived`;
   } catch (error) {

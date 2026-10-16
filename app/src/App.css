@@ -290,3 +290,57 @@ button.danger:hover {
   color: #ff8a8a;
   font-weight: 600;
 }
+
+.journal,
+.leaderboard {
+  margin: 1rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid #3a4a6a;
+  border-radius: 8px;
+  font-size: 0.9em;
+}
+
+.journal h3,
+.leaderboard h3 {
+  margin: 0 0 0.5rem;
+  font-size: 1em;
+}
+
+.journal-lines {
+  max-height: 16rem;
+  overflow-y: auto;
+}
+
+.journal-line {
+  padding: 0.15rem 0;
+  border-bottom: 1px solid #1a2147;
+}
+
+.journal-note,
+.journal-empty {
+  color: #8a96b8;
+}
+
+.leaderboard table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.leaderboard th,
+.leaderboard td {
+  padding: 0.25rem 0.5rem;
+  text-align: left;
+}
+
+.leaderboard-address {
+  font-family: monospace;
+}
+
+.leaderboard-me {
+  background: #2a4a9a;
+  color: #ffd700;
+}
+
+.leaderboard-own {
+  margin-top: 0.5rem;
+}

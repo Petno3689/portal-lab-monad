@@ -7,6 +7,9 @@ import {
   hexToBigInt,
   http,
   keccak256,
+  pad,
+  parseEventLogs,
+  toHex,
   BaseError,
   ContractFunctionRevertedError,
   type Abi,
@@ -179,23 +182,129 @@ export async function blockOf(hash: `0x${string}`): Promise<bigint> {
   return (await publicClient.getTransactionReceipt({ hash })).blockNumber;
 }
 
-/** What the contract emitted for this player's deferred action in `slot`, from `fromBlock` to the latest block. */
+/** One PortalLab event decoded from a log. */
+export interface LabEvent {
+  eventName: string;
+  args: Record<string, unknown>;
+  blockNumber: bigint;
+  logIndex: number;
+}
+
+// The public RPC accepts eth_getLogs over 101 blocks and answers 413 to 1000.
+const LOG_CHUNK = 100n;
+
+async function readChunk(player: Address, from: bigint, to: bigint): Promise<LabEvent[]> {
+  const raw = (await publicClient.request({
+    method: 'eth_getLogs',
+    params: [
+      {
+        address: lab.address,
+        // Every PortalLab event has `address indexed player` first: topic1.
+        topics: [null, pad(player, { size: 32 })],
+        fromBlock: toHex(from),
+        toBlock: toHex(to),
+      },
+    ],
+  })) as { blockNumber: string; logIndex: string }[];
+  const logs = raw.map((l) => ({ ...l, blockNumber: BigInt(l.blockNumber), logIndex: Number(l.logIndex) }));
+  const parsed = parseEventLogs({ abi: portalLabAbi, logs: logs as never }) as unknown as {
+    eventName: string;
+    args?: Record<string, unknown>;
+    blockNumber: bigint;
+    logIndex: number;
+  }[];
+  return parsed
+    .map((l) => ({ eventName: l.eventName, args: l.args ?? {}, blockNumber: l.blockNumber, logIndex: l.logIndex }))
+    .sort((a, b) => (a.blockNumber === b.blockNumber ? a.logIndex - b.logIndex : a.blockNumber < b.blockNumber ? -1 : 1));
+}
+
+/**
+ * Every PortalLab event of `player` in [fromBlock, toBlock] (inclusive), read in chunks of
+ * at most 100 blocks, one after another, in emission order.
+ */
+export async function readPlayerEvents(player: Address, fromBlock: bigint, toBlock: bigint): Promise<LabEvent[]> {
+  const out: LabEvent[] = [];
+  for (let from = fromBlock; from <= toBlock; from += LOG_CHUNK) {
+    const to = from + LOG_CHUNK - 1n < toBlock ? from + LOG_CHUNK - 1n : toBlock;
+    out.push(...(await readChunk(player, from, to)));
+  }
+  return out;
+}
+
+/**
+ * Scan [lowBlock, highBlock] backward in 100-block chunks, newest first, at most
+ * `maxChunks`. The scan ends after the first chunk for which `stop` returns true.
+ * Returns the events of the chunks read (emission order) and whether `stop` fired.
+ */
+export async function scanPlayerEventsBackward(
+  player: Address,
+  lowBlock: bigint,
+  highBlock: bigint,
+  maxChunks: number,
+  stop: (chunk: LabEvent[]) => boolean,
+): Promise<{ events: LabEvent[]; stopped: boolean }> {
+  const chunks: LabEvent[][] = [];
+  let stopped = false;
+  let to = highBlock;
+  for (let n = 0; n < maxChunks && to >= lowBlock; n++) {
+    const from = to - LOG_CHUNK + 1n > lowBlock ? to - LOG_CHUNK + 1n : lowBlock;
+    const chunk = await readChunk(player, from, to);
+    chunks.unshift(chunk);
+    if (stop(chunk)) {
+      stopped = true;
+      break;
+    }
+    to = from - 1n;
+  }
+  return { events: chunks.flat(), stopped };
+}
+
+const DEFERRED_SCAN_CAP = 50;
+
+/**
+ * What the contract emitted for this player's deferred action in `slot`: scans backward
+ * from `toBlock` (where the poll saw the pending action clear) to `fromBlock` (the
+ * committing block), stops at the first chunk holding the outcome, gives up after 50 chunks.
+ */
 export async function readDeferredOutcome(
   player: Address,
   slot: number,
   action: number,
   fromBlock: bigint,
+  toBlock: bigint,
 ): Promise<{ cancelledReason: number | null; performed: boolean }> {
-  const range = { fromBlock, toBlock: 'latest' as const, args: { player } };
-  const [cancels, performs] = await Promise.all([
-    publicClient.getContractEvents({ ...lab, eventName: 'DeferredActionCancelled', ...range }),
-    publicClient.getContractEvents({ ...lab, eventName: 'ActionPerformed', ...range }),
-  ]);
-  const match = (l: { args: unknown }) => {
-    const a = l.args as { slot?: number; action?: number };
-    return Number(a.slot) === slot && Number(a.action) === action;
-  };
-  const cancel = cancels.filter(match).at(-1);
-  if (cancel) return { cancelledReason: Number((cancel.args as { reason: number }).reason), performed: false };
-  return { cancelledReason: null, performed: performs.some(match) };
+  const match = (e: LabEvent) => Number(e.args.slot) === slot && Number(e.args.action) === action;
+  const cancelsIn = (c: LabEvent[]) => c.filter((e) => e.eventName === 'DeferredActionCancelled' && match(e));
+  const performsIn = (c: LabEvent[]) => c.filter((e) => e.eventName === 'ActionPerformed' && match(e));
+  let found: LabEvent[] = [];
+  await scanPlayerEventsBackward(player, fromBlock, toBlock, DEFERRED_SCAN_CAP, (chunk) => {
+    const hit = cancelsIn(chunk).length > 0 || performsIn(chunk).length > 0;
+    if (hit) found = chunk;
+    return hit;
+  });
+  const cancel = cancelsIn(found).at(-1);
+  if (cancel) return { cancelledReason: Number(cancel.args.reason), performed: false };
+  return { cancelledReason: null, performed: performsIn(found).length > 0 };
+}
+
+export interface LeaderboardRow {
+  player: Address;
+  run: BestRun;
+}
+
+const LEADERBOARD_PAGE = 100n;
+
+/** The whole on-chain leaderboard in insertion order; pages are read one after another. */
+export async function readLeaderboard(): Promise<LeaderboardRow[]> {
+  const size = (await publicClient.readContract({ ...lab, functionName: 'leaderboardSize' })) as bigint;
+  const rows: LeaderboardRow[] = [];
+  for (let offset = 0n; offset < size; offset += LEADERBOARD_PAGE) {
+    const [players, runs] = (await publicClient.readContract({
+      ...lab,
+      functionName: 'leaderboardPage',
+      args: [offset, LEADERBOARD_PAGE],
+    })) as unknown as [readonly Address[], readonly unknown[]];
+    players.forEach((player, i) => rows.push({ player, run: toMirror<BestRun>(runs[i]) }));
+  }
+  return rows;
 }

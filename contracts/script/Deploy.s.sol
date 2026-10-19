@@ -8,12 +8,12 @@ import {Config} from "../src/PortalLabTypes.sol";
 import {PythEntropySource} from "../src/PythEntropySource.sol";
 
 /// @notice Deployment script for PortalLab.
-/// @dev Run with the private key supplied externally via --private-key or
-/// PRIVATE_KEY env var. Never put a key in this file.
+/// @dev Sign with the encrypted Foundry keystore only. Never pass a raw key:
+/// no --private-key flag, no PRIVATE_KEY env var, never a key in this file.
 ///
-/// Example (Monad testnet):
+/// Example (Monad testnet, run from contracts/; full procedure in docs/DEPLOY.md):
 ///   forge script script/Deploy.s.sol --rpc-url monad_testnet --broadcast \
-///     --verify --private-key $PRIVATE_KEY
+///     --account portal-deployer
 ///
 /// The script prints the deployed address and key configuration parameters so
 /// the deploy log shows exactly what landed on chain.

@@ -133,8 +133,11 @@ sourcify --verifier-url https://sourcify-api-monad.blockvision.org/
 ..\..\.tools\foundry-win\cast.exe call <адрес> "config()" --rpc-url monad_testnet
 ```
 
-Значения читаются из `contracts/src/GameConfig.sol`; на момент написания:
-- `hpStart = 50`, `hpMax = 100`
+Ожидаемые значения — в `contracts/src/GameConfig.sol` того коммита, с которого
+идёт деплой. При расхождении прав `GameConfig.sol`, а этот список надо поправить.
+На ветке `contract-v2` после ребаланса 16 октября:
+- `hpStart = 80`, `hpMax = 100`, `hpCollapsePerDeath = 8`
+- `pressureRampPerHour = 2`
 - `secPerHour = 15`
 - `epochHours = 36`
 - `requestTimeoutHours = 1`

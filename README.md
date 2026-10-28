@@ -12,12 +12,31 @@ for as long as you can.
 
 | Contract | Address |
 |---|---|
-| `PortalLab` | `0x0DF83BfFE9b7071f29524964ed1D8Ef84bA2829c` |
-| `PythEntropySource` | `0x70c1D0AF77594CC2Dd2650Ea8c979092a42C156F` |
+| `PortalLab` | `0x3FE4121729a8f1e2BcC7ECD9dB1279E6EBeF7678` |
+| `PythEntropySource` | `0x45A7120772BB9D15FDFd682dF3EcCc8AeAD306c2` |
 
-These are the currently live deployment. The contract on this branch is a
-newer version that has not been deployed yet; the addresses will be replaced
-when it is.
+This is the live deployment, made on 28 October 2026 from this code. The
+version submitted to Monad Metropolis is described in "Submitted version"
+below.
+
+## Submitted version
+
+- The project was submitted to Monad Metropolis on 13 October 2026.
+- The submitted code is the git tag `hackathon-submission` (commit `77b1854`).
+- Its contracts on Monad testnet, deployed 13 October 2026 and source-verified:
+  `PortalLab` `0x0DF83BfFE9b7071f29524964ed1D8Ef84bA2829c`,
+  `PythEntropySource` `0x70c1D0AF77594CC2Dd2650Ea8c979092a42C156F`.
+- Those contracts remain on chain; the live front end now targets the newer
+  deployment above.
+
+What changed since:
+
+- Portals are born at the hour their spawn pressure matures.
+- A Deaf portal's second survey reads exact values.
+- `cancelDeferred` timeouts (`requestTimeoutHours`, `outsiderTimeoutHours`).
+- `epochHours` is 36.
+- The leaderboard is on chain.
+- Rebalance: `hpStart` 80, `hpCollapsePerDeath` 8, `pressureRampPerHour` 2.
 
 ## Architecture
 
@@ -97,8 +116,9 @@ granularity.
   seconds (`outsiderTimeoutHours` 40 x 15). The wait is measured in real
   time, not game hours, because a request stuck at an epoch edge freezes the
   game clock. The Entropy fee is not refunded.
-- **The deployed contracts are source-verified** with Sourcify and shown on
-  MonadVision.
+- **Source verification of the 28 October deployment is pending** (the
+  Sourcify service used by MonadVision is down); the submitted 13 October
+  deployment is source-verified on MonadVision.
 
 ## Stack
 

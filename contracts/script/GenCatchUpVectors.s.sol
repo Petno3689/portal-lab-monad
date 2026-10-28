@@ -62,9 +62,9 @@ contract GenCatchUpVectors is Script {
         // filled by _eval
         Game rg;
         Portal[12] rp;
-        TimeLib.Collapse[12] ev;
+        TimeLib.Collapse[64] ev;
         uint8 evN;
-        TimeLib.Spawn[12] sp;
+        TimeLib.Spawn[64] sp;
         uint8 spN;
         bool cappedShort;
     }
@@ -614,7 +614,7 @@ contract GenCatchUpVectors is Script {
                 Portal memory p;
                 p.id = uint16(1 + (y >> 4) % 500);
                 p.portalType = PortalType((y >> 8) % 5);
-                p.nameIndex = uint16((y >> 12) % 24);
+                p.nameIndex = uint8((y >> 12) % 24);
                 p.status = (y >> 16) % 4 == 0 ? PortalStatus.Questioned : PortalStatus.Open;
                 p.surveyed = (y >> 20) % 3 != 0;
                 p.creaturesKnown = p.surveyed ? (y >> 24) % 8 != 0 : (y >> 24) % 3 == 0;
@@ -653,9 +653,9 @@ contract GenCatchUpVectors is Script {
         (
             Game memory rg,
             Portal[12] memory rp,
-            TimeLib.Collapse[12] memory ev,
+            TimeLib.Collapse[64] memory ev,
             uint8 evN,
-            TimeLib.Spawn[12] memory sp,
+            TimeLib.Spawn[64] memory sp,
             uint8 spN,
             bool capped
         ) = TimeLib.catchUp(
@@ -1112,7 +1112,7 @@ contract GenCatchUpVectors is Script {
         s = string.concat(s, "]");
     }
 
-    function _eventsJson(TimeLib.Collapse[12] memory ev, uint8 n) private pure returns (string memory s) {
+    function _eventsJson(TimeLib.Collapse[64] memory ev, uint8 n) private pure returns (string memory s) {
         s = "[";
         for (uint256 i = 0; i < n; i++) {
             s = string.concat(s, i == 0 ? "" : ",", VectorCodec.collapseJson(ev[i]));
@@ -1120,7 +1120,7 @@ contract GenCatchUpVectors is Script {
         s = string.concat(s, "]");
     }
 
-    function _spawnsJson(TimeLib.Spawn[12] memory sp, uint8 n) private pure returns (string memory s) {
+    function _spawnsJson(TimeLib.Spawn[64] memory sp, uint8 n) private pure returns (string memory s) {
         s = "[";
         for (uint256 i = 0; i < n; i++) {
             s = string.concat(s, i == 0 ? "" : ",", VectorCodec.spawnJson(sp[i]));

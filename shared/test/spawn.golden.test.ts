@@ -40,7 +40,7 @@ describe("golden vectors — TS mirror matches TimeLib.catchUp step 5 (pressure 
 
     it("has enough vectors, each carrying a full twelve-portal world", () => {
         expect(file.vectors.length).toBeGreaterThanOrEqual(40);
-        expect(file.refusals.length).toBeGreaterThanOrEqual(3);
+        expect(file.refusals.length).toBeGreaterThanOrEqual(2);
         expect(file.configs.length).toBeGreaterThan(0);
         expect(file.typeParams.length % 5).toBe(0);
         [...file.vectors, ...file.refusals].forEach((v, i) => {

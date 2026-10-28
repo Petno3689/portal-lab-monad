@@ -77,7 +77,7 @@ contract BalanceRulesTest is Test {
         p.creatures = 1;
         _write(_game(), p);
         harness.act(0, Action.Close);
-        assertEq(_game_().hp, 90); // 100 - 10*1
+        assertEq(_game_().hp, 92); // 100 - 8*1
     }
 
     function test_8_2_CloseSurveyed_N2() public {
@@ -85,7 +85,7 @@ contract BalanceRulesTest is Test {
         p.creatures = 2;
         _write(_game(), p);
         harness.act(0, Action.Close);
-        assertEq(_game_().hp, 80); // 100 - 10*2
+        assertEq(_game_().hp, 84); // 100 - 8*2
     }
 
     function test_8_2_CloseSurveyed_N3() public {
@@ -93,7 +93,7 @@ contract BalanceRulesTest is Test {
         p.creatures = 3;
         _write(_game(), p);
         harness.act(0, Action.Close);
-        assertEq(_game_().hp, 70); // 100 - 10*3
+        assertEq(_game_().hp, 76); // 100 - 8*3
     }
 
     // ── 8.3: Blind close charges creaturesHi, NOT midpoint ───────────────────
@@ -108,9 +108,9 @@ contract BalanceRulesTest is Test {
         p.hoursToCollapse = 5; // closable by time (<=6)
         _write(_game(), p);
         harness.act(0, Action.Close);
-        // deaths = creaturesHi = 3; hpLost = 10*3 = 30.
-        // NOT 10*2=20 (midpoint would be 2.5→2 truncated) and NOT 10*2.5=25.
-        assertEq(_game_().hp, 70); // 100 - 30
+        // deaths = creaturesHi = 3; hpLost = 8*3 = 24.
+        // NOT 8*2=16 (midpoint would be 2.5→2 truncated) and NOT 8*2.5=20.
+        assertEq(_game_().hp, 76); // 100 - 24
     }
 
     // ── 8.4: Crew inside counts as extra deaths on close ─────────────────────
@@ -123,8 +123,8 @@ contract BalanceRulesTest is Test {
         g.observersFree = 2; // one free, one inside
         _write(g, p);
         harness.act(0, Action.Close);
-        // deaths = 2 creatures + 1 observer = 3; hpLost = 10*3 = 30.
-        assertEq(_game_().hp, 70); // 100 - 30
+        // deaths = 2 creatures + 1 observer = 3; hpLost = 8*3 = 24.
+        assertEq(_game_().hp, 76); // 100 - 24
     }
 
     function test_8_4_RescuerAddsOneDeath() public {
@@ -135,8 +135,8 @@ contract BalanceRulesTest is Test {
         g.rescuersFree = 1; // one free, one inside
         _write(g, p);
         harness.act(0, Action.Close);
-        // deaths = 2 creatures + 1 rescuer = 3; hpLost = 10*3 = 30.
-        assertEq(_game_().hp, 70); // 100 - 30
+        // deaths = 2 creatures + 1 rescuer = 3; hpLost = 8*3 = 24.
+        assertEq(_game_().hp, 76); // 100 - 24
     }
 
     function test_8_4_BothCrewAddTwoDeaths() public {
@@ -149,8 +149,8 @@ contract BalanceRulesTest is Test {
         g.rescuersFree = 1;
         _write(g, p);
         harness.act(0, Action.Close);
-        // deaths = 2 creatures + observer + rescuer = 4; hpLost = 10*4 = 40.
-        assertEq(_game_().hp, 60); // 100 - 40
+        // deaths = 2 creatures + observer + rescuer = 4; hpLost = 8*4 = 32.
+        assertEq(_game_().hp, 68); // 100 - 32
     }
 
     // ── 8.5: Collapse uses midpoint AND hpCollapseBase — DIFFERENT from close ─
@@ -161,8 +161,8 @@ contract BalanceRulesTest is Test {
 
     function test_8_5_Collapse_Unsurveyed_UsesBasePlusMidpoint() public {
         // creaturesLo=2, creaturesHi=4: midpoint = (2+4)/2 = 3.
-        // Collapse: hpLost = hpCollapseBase + hpCollapsePerDeath * 3 = 20 + 30 = 50.
-        // Close (same range): deaths = creaturesHi = 4, hpLost = 10*4 = 40.
+        // Collapse: hpLost = hpCollapseBase + hpCollapsePerDeath * 3 = 20 + 24 = 44.
+        // Close (same range): deaths = creaturesHi = 4, hpLost = 8*4 = 32.
         // These MUST differ — the test asserts the collapse (base+midpoint) value.
         Game memory g = _game();
         g.openPortals = 1;
@@ -179,8 +179,8 @@ contract BalanceRulesTest is Test {
         vm.warp(BASE + 3 * SPH);
         harness.sync(player);
 
-        // hpLost from collapse = 20 + 10*3 = 50; NOT 40 (close formula).
-        assertEq(_game_().hp, 50); // 100 - 50
+        // hpLost from collapse = 20 + 8*3 = 44; NOT 32 (close formula).
+        assertEq(_game_().hp, 56); // 100 - 44
     }
 
     // ── 8.6: New game starts with hpStart, not hpMax ──────────────────────────
@@ -194,8 +194,8 @@ contract BalanceRulesTest is Test {
         lab.startGame();
 
         Game memory g = lab.getGame(address(0xBEEF));
-        assertEq(g.hp, c.hpStart);       // must equal hpStart (50)
-        assertEq(c.hpStart, 50);          // anchor: DefaultConfig.hpStart == 50
+        assertEq(g.hp, c.hpStart);       // must equal hpStart (80)
+        assertEq(c.hpStart, 80);          // anchor: DefaultConfig.hpStart == 80
         assertTrue(c.hpStart < c.hpMax);  // hpStart < hpMax (100)
     }
 
@@ -246,13 +246,12 @@ contract BalanceRulesTest is Test {
     }
 
     function test_8_8_DeafFirstPass_DoesNotSetCreaturesKnown() public {
-        // Deaf is surveyPrecise=false. With ranges wider than deafNarrowThreshold
-        // (10), the first two-phase survey only narrows — surveyed and
-        // creaturesKnown must both stay false. `surveyPending` is set at commit and
+        // Deaf is surveyPrecise=false. The first survey of a Deaf portal
+        // (narrowedOnce still false) only narrows — surveyed and creaturesKnown
+        // must both stay false; the second survey reads exact. `surveyPending` is set at commit and
         // cleared again on reveal (SPEC §6.3), so after the full survey it is false.
         // The observer stays inside waiting for a recall and a second visit.
         Config memory c = DefaultConfig.config();
-        assertEq(c.deafNarrowThreshold, 10); // anchor
 
         Portal memory p;
         p.status = PortalStatus.Open;
@@ -260,7 +259,7 @@ contract BalanceRulesTest is Test {
         p.creaturesKnown = false;
         p.portalType = PortalType.Deaf;
         p.energyLo = 0;
-        p.energyHi = 80; // width 80 > deafNarrowThreshold 10
+        p.energyHi = 80; // wide ranges; first survey (narrowedOnce == false) only narrows
         p.stabilityLo = 0;
         p.stabilityHi = 80;
         p.creaturesLo = 0;

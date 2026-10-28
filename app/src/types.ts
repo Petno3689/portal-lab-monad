@@ -39,3 +39,10 @@ export const ActionNames: Record<Action, string> = {
   [Action.Evacuate]: 'Evacuate',
   [Action.Close]: 'Close',
 };
+
+export const portalTypeNames = ['Flash', 'Long-lived', 'Deaf', 'Resonant', 'Energetic'];
+
+/** Why a deferred action was cancelled, in the words shown to the player. */
+export function getCancelReasonMessage(reason: number): string {
+  return reason === Refusal.PortalEmpty ? 'the portal is gone or was replaced' : getRefusalMessage(reason);
+}

@@ -17,7 +17,7 @@ import {
 /// @dev Number of states `PreviewScenarios.build` can produce (`0 … COUNT-1`).
 /// A file-level constant so both consumers can size their loops without first
 /// having a deployed driver to ask.
-uint256 constant PREVIEW_STATE_COUNT = 11;
+uint256 constant PREVIEW_STATE_COUNT = 12;
 
 /// @title PreviewScenarios — reachable player states, produced by the contract itself.
 /// @notice Every state this driver hands back was WORKED OUT BY `PortalLab`, not
@@ -65,15 +65,20 @@ contract PreviewScenarios {
     /// @dev Game hours of absence that accrue enough spawn pressure for exactly
     /// one portal (`basePressurePerHour` is about a tenth of `spawnCostUnits`).
     uint32 private constant HOURS_ONE_PORTAL = 10;
-    /// @dev Game hours of absence that accrue enough pressure for the
-    /// `maxSpawnsPerTx` cap to bind, while stopping short of the first pinned
-    /// epoch edge so the resulting state can still be projected FORWARD.
-    uint32 private constant HOURS_FULL_HOUSE = 34;
+    /// @dev Game hours of absence that leave the starting hand — three portals
+    /// born at hour 0 — open and untouched: no portal lives fewer than five hours
+    /// and the next one matures only at hour 10. Short of the first pinned epoch
+    /// edge, so the resulting state can still be projected FORWARD. (It was 34
+    /// while a per-call spawn cap existed; with births at maturity a 34-hour
+    /// absence lets the hand collapse, and a run with startGame's hp can die.)
+    uint32 private constant HOURS_FULL_HOUSE = 4;
     /// @dev Game hours of absence long enough for the deterministic long-absence
     /// overflow (SPEC §5.5) to fill the lab and end the run with no word at all.
     uint32 private constant HOURS_ABANDONED = 200;
-    /// @dev Tries a draw-dependent scenario makes before giving up.
-    uint256 private constant ATTEMPTS = 24;
+    /// @dev Tries a draw-dependent scenario makes before giving up. (Raised 24 -> 96
+    /// with epochHours 36: the blind-empty draw of state 7 needs a Resonant/Energetic
+    /// newborn with a zero creature count, which the new epoch indices made rarer.)
+    uint256 private constant ATTEMPTS = 96;
 
     /// @notice A required state could not be produced by real calls within
     /// `ATTEMPTS` tries. Raised instead of writing the state by hand.
@@ -89,8 +94,8 @@ contract PreviewScenarios {
     /// @notice Human name of state `i`, used as the vector label.
     function label(uint256 i) external pure returns (string memory) {
         if (i == 0) return "a freshly started game, no time has passed";
-        if (i == 1) return "one open portal, pinned edge still ahead";
-        if (i == 2) return "the per-transaction spawn cap bound: three open portals";
+        if (i == 1) return "four open portals: the starting hand plus one born after ten hours, one epoch pinned";
+        if (i == 2) return "the starting hand: three open portals";
         if (i == 3) return "seventeen hours lived one hour at a time";
         if (i == 4) return "a survey committed, its word still in flight";
         if (i == 5) return "a surveyed portal with the observer still inside";
@@ -99,6 +104,7 @@ contract PreviewScenarios {
         if (i == 8) return "a paid sync awaiting its word, nothing pinned yet";
         if (i == 9) return "a run the long-absence overflow killed";
         if (i == 10) return "a dead run, settled";
+        if (i == 11) return "a seeded state: exactly one open portal, one epoch pinned";
         revert ScenarioUnreachable(i);
     }
 
@@ -147,6 +153,9 @@ contract PreviewScenarios {
             player = _addr(i, 0);
             _startAndDie(player);
             lab.settle(player);
+        } else if (i == 11) {
+            player = _addr(i, 0);
+            _oneOpenPortalSeeded(player);
         } else {
             revert ScenarioUnreachable(i);
         }
@@ -226,6 +235,33 @@ contract PreviewScenarios {
         if (lab.getPending(player).active) lab.reveal(player);
     }
 
+    /// @dev SEEDED, not played: the starting hand is three portals, so no sequence
+    /// of real calls leaves exactly one open (a close needs time and costs hp).
+    /// Starts a game for real (and lets the hand be born), then keeps one portal of the hand and empties the
+    /// other slots through the harness setters, and pins one epoch to a fixed
+    /// word. Appended LAST, so the request stream of states 0-10 is untouched.
+    function _oneOpenPortalSeeded(address player) private {
+        // Lived HOURS_FULL_HOUSE hours: the starting hand is open (as in state 2).
+        _startAndLive(player, HOURS_FULL_HOUSE);
+        Portal[MAX_OPEN_PORTALS] memory ps = lab.getPortals(player);
+        bool kept;
+        for (uint8 slot = 0; slot < MAX_OPEN_PORTALS; slot++) {
+            if (ps[slot].status == PortalStatus.Empty) continue;
+            if (!kept) {
+                kept = true;
+                continue;
+            }
+            Portal memory none;
+            lab.setPortal(player, slot, none);
+        }
+        require(kept, "PreviewScenarios: no portal in the starting hand");
+        Game memory g = lab.getGame(player);
+        g.openPortals = 1;
+        lab.setGame(player, g);
+        // setGame pins a coverage of its own; put a single epoch back after it.
+        lab.setCoverage(player, uint256(keccak256("preview-seeded-one-open")), 1);
+    }
+
     /// @dev Start a game and live `h` game hours away from the keyboard, returning
     /// in a single crossing.
     function _startAndLive(address player, uint32 h) private {
@@ -298,24 +334,39 @@ contract PreviewScenarios {
     /// @dev Send rescuers into unsurveyed portals until one of them finds the
     /// portal empty and leaves for recovery, parking a cooldown cell in the game.
     /// A rescuer who DID get in is recalled, so the next portal can be tried.
+    /// Lives to the hour the first portal after the hand is born: a blind rescuer
+    /// is judged on the cautious end of the ranges, and only a portal born that
+    /// very hour still has its type's ranges un-widened (the hand's have drifted
+    /// out since hour 0 and read critical).
     function _rescuerRecovering(uint256 state) private returns (address) {
         for (uint256 a = 0; a < ATTEMPTS; a++) {
             address player = _addr(state, a);
-            _startAndLive(player, HOURS_FULL_HOUSE);
-            for (uint8 slot = 0; slot < MAX_OPEN_PORTALS; slot++) {
-                if (lab.getPortals(player)[slot].status == PortalStatus.Empty) continue;
-                if (lab.canAct(player, slot, Action.SendRescuer) != Refusal.None) continue;
-                vm.prank(player);
-                lab.act(slot, Action.SendRescuer);
-                if (lab.getPending(player).active) lab.reveal(player);
-                if (lab.getGame(player).rescuerReadyAt0 != 0) return player;
-                if (lab.canAct(player, slot, Action.RecallRescuer) == Refusal.None) {
-                    vm.prank(player);
-                    lab.act(slot, Action.RecallRescuer);
-                }
-            }
+            _startAndLive(player, HOURS_ONE_PORTAL);
+            // Each try runs in its own call frame (an external self-call), so its
+            // memory is released: ATTEMPTS iterations of `getPortals` in one frame
+            // exhaust the script's memory (MemoryOOG).
+            if (this.tryRecovering(player)) return player;
         }
         revert ScenarioUnreachable(state);
+    }
+
+    /// @dev One try of `_rescuerRecovering`, in a frame of its own. Only `this`
+    /// may call it.
+    function tryRecovering(address player) external returns (bool) {
+        require(msg.sender == address(this), "PreviewScenarios: internal");
+        for (uint8 slot = 0; slot < MAX_OPEN_PORTALS; slot++) {
+            if (lab.getPortals(player)[slot].status == PortalStatus.Empty) continue;
+            if (lab.canAct(player, slot, Action.SendRescuer) != Refusal.None) continue;
+            vm.prank(player);
+            lab.act(slot, Action.SendRescuer);
+            if (lab.getPending(player).active) lab.reveal(player);
+            if (lab.getGame(player).rescuerReadyAt0 != 0) return true;
+            if (lab.canAct(player, slot, Action.RecallRescuer) == Refusal.None) {
+                vm.prank(player);
+                lab.act(slot, Action.RecallRescuer);
+            }
+        }
+        return false;
     }
 
     /// @dev First open portal fit for a survey. `needCreatures` demands a type

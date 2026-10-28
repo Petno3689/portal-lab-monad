@@ -19,6 +19,8 @@
 export const MAX_OPEN_PORTALS = 12n;
 /** Upper bound on rescuers per game (constant MAX_RESCUERS). */
 export const MAX_RESCUERS = 4n;
+/** Event fuse of one catch-up: collapses plus births (constant MAX_CATCHUP_EVENTS). */
+export const MAX_CATCHUP_EVENTS = 64n;
 
 /** Must match PortalLabTypes.sol enum order exactly. */
 export enum PortalType {
@@ -86,6 +88,7 @@ export interface Portal {
     nameIndex: bigint;
     status: PortalStatus;
     surveyed: boolean;
+    narrowedOnce: boolean;
     observerInside: boolean;
     rescuerInside: boolean;
     surveyPending: boolean;
@@ -131,6 +134,7 @@ export interface Pending {
     active: boolean;
     action: Action;
     slot: bigint;
+    portalId: bigint;
     atHour: bigint;
     requestId: bigint;
     coveredEpochs: bigint;
@@ -194,15 +198,14 @@ export interface Config {
     closeStabilityBelow: bigint;
     closeHoursAtMost: bigint;
     // spawns
-    maxSpawnsPerTx: bigint;
     basePressurePerHour: bigint;
     pressureRampPerHour: bigint;
     spawnCostUnits: bigint;
     closePressureBonus: bigint;
     // survey / knowledge decay
     rangeWidenPerHour: bigint;
-    deafNarrowThreshold: bigint;
     // spawn entropy
     epochHours: bigint;
     requestTimeoutHours: bigint;
+    outsiderTimeoutHours: bigint;
 }

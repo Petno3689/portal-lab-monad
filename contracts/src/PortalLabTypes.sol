@@ -13,6 +13,16 @@ pragma solidity 0.8.28;
 /// the fixed portal array, not a tunable parameter — hence a `constant`.
 uint256 constant MAX_OPEN_PORTALS = 12;
 
+/// @dev Fuse on the number of events (collapses plus births) one catch-up may
+/// process. Sizes the event arrays `TimeLib.catchUp` returns. When it is exhausted
+/// the walk stops at the hour of the last processed event and reports it like the
+/// pinned edge (`cappedShort`), so the next call continues. With the deployed
+/// configuration a real game never reaches it: every collapse costs HP
+/// (`hpEmptyCollapse > 0`, enforced at deploy), an unsurveyed newborn's collapse
+/// costs at least `hpCollapseBase + hpCollapsePerDeath`, and HP never exceeds
+/// `hpMax`. A protocol bound, not a tunable — hence a `constant`.
+uint256 constant MAX_CATCHUP_EVENTS = 64;
+
 /// @dev Upper bound on the number of rescuers a game may have. Bounds the
 /// rescuer cooldown ledger in `Game` (the `rescuerReadyAt0..3` cells);
 /// `Config.rescuersTotal` is validated against it at deploy. A protocol
@@ -124,8 +134,8 @@ enum PortalStatus {
 /// @notice A single portal.
 /// @dev Packed into one 32-byte storage slot by declaration order (32 bytes
 /// of 32 used). All fields together fit without crossing a slot boundary:
-///   id(2) + portalType(1) + nameIndex(2) + status(1) + surveyed(1)
-///   + observerInside(1) + rescuerInside(1) + surveyPending(1)
+///   id(2) + portalType(1) + nameIndex(1) + status(1) + surveyed(1)
+///   + narrowedOnce(1) + observerInside(1) + rescuerInside(1) + surveyPending(1)
 ///   + rescuerPending(1) + creaturesKnown(1) + energy(1) + stability(1)
 ///   + creatures(1) + hoursToCollapse(2) + spawnedAtHour(4) + snapshotAt(5)
 ///   + energyLo/Hi + stabilityLo/Hi + creaturesLo/Hi(6)
@@ -142,9 +152,12 @@ enum PortalStatus {
 struct Portal {
     uint16 id;
     PortalType portalType;
-    uint16 nameIndex;
+    uint8 nameIndex; // index into the name pool (NAME_POOL_SIZE = 24)
     PortalStatus status;
     bool surveyed;
+    /// @dev True after a non-precise (Deaf) survey narrowed this portal; the
+    /// NEXT survey then reads exact values like a precise type.
+    bool narrowedOnce;
     bool observerInside;
     bool rescuerInside;
     bool surveyPending;
@@ -251,12 +264,14 @@ function setRescuerReadyAt(Game memory g, uint8 i, uint32 v) pure {
 
 /// @notice A single deferred (two-phase) action awaiting its random word (SPEC
 /// §6.3). At most ONE per player: while `active`, every new action is refused.
-/// @dev Packs into ONE 32-byte storage slot (26 of 32 bytes used):
-///   active(1) + action(1) + slot(1) + atHour(4) + requestId(8) + coveredEpochs(4)
-///   + deferredWorld(1) + syncOnly(1) + committedAt(5) = 26 bytes.
+/// @dev Packs into ONE 32-byte storage slot (28 of 32 bytes used):
+///   active(1) + action(1) + slot(1) + portalId(2) + atHour(4) + requestId(8)
+///   + coveredEpochs(4) + deferredWorld(1) + syncOnly(1) + committedAt(5) = 28 bytes.
 /// This is what keeps `Player` at sixteen slots rather than seventeen — the
 /// fields must stay scalar and small; do not widen `requestId` past `uint64`
 /// (it mirrors a Pyth sequence number) or add a field that overflows the slot.
+/// The TARGET is the portal, identified by `portalId`, not the slot alone: a
+/// portal may collapse and a newborn take its slot while the word is in flight.
 /// The per-portal `Portal.surveyPending` flag marks WHICH portal is being
 /// surveyed (and gates `RecallObserver`); this struct carries the rest — which
 /// action, which request, and when — that a portal flag cannot.
@@ -280,6 +295,7 @@ struct Pending {
     bool active; // a deferred action is outstanding
     Action action; // which action was deferred
     uint8 slot; // the portal slot it targets
+    uint16 portalId; // id of the portal chosen at commit; a reveal that finds another id cancels (0 = syncOnly, unchecked)
     uint32 atHour; // game hour the commit was fixed at
     uint64 requestId; // id returned by the random source; matched on delivery
     uint32 coveredEpochs; // GAME state: spawn epochs pinned to Player.epochWord
@@ -361,15 +377,15 @@ struct Config {
     // closing thresholds
     uint8 closeStabilityBelow;
     uint16 closeHoursAtMost;
-    // spawns (pressure in units; one unit = 1/spawnCostUnits of a portal, SPEC §4.6/§7)
-    uint8 maxSpawnsPerTx;
+    // spawns (pressure in units; one unit = 1/spawnCostUnits of a portal, SPEC §4.6/§7).
+    // There is no per-transaction spawn cap: a portal is born at the hour its
+    // pressure matures, whoever calls and whenever (TimeLib.catchUp).
     uint32 basePressurePerHour; // pressure gained per game hour at the start
     uint32 pressureRampPerHour; // extra pressure per hour added for each lived hour
     uint32 spawnCostUnits; // pressure one portal costs
     uint32 closePressureBonus; // pressure added immediately when a portal is closed
     // survey / knowledge decay (SPEC §3.1)
     uint8 rangeWidenPerHour; // per game hour, each energy/stability bound drifts out
-    uint8 deafNarrowThreshold; // range width at which a deaf survey finally reads exact
     // spawn entropy (Ticket 4.5)
     /// @dev Length of a spawn epoch in game hours. One random word is pinned per
     /// epoch, so a player can predict spawns at most `epochHours` hours ahead and
@@ -377,9 +393,16 @@ struct Config {
     /// (closePressureBonus 4 + rangeWiden 1 + deafNarrow 1 + epochHours 2 = 8 of
     /// 32 bytes); Config stays at three slots. Validated `> 0` at deploy.
     uint16 epochHours;
-    /// @dev Game hours after a deferral's commit at which anyone may cancel it
-    /// (Ticket 4.7). Measured in REAL time (`block.timestamp`), not game hours.
-    /// Packs into Config slot 2 after epochHours; Config stays at three slots.
-    /// Validated `> 0` at deploy.
+    /// @dev Game hours after a deferral's commit at which the PLAYER may cancel
+    /// their own deferral (Ticket 4.7). Measured in REAL time (`block.timestamp`),
+    /// not game hours. Packs into Config slot 2 after epochHours; Config stays at
+    /// three slots. Validated `> 0` at deploy.
     uint16 requestTimeoutHours;
+    /// @dev Game hours after a deferral's commit at which ANYONE ELSE may cancel
+    /// it; longer than `requestTimeoutHours`, so a stranger cannot grief a player
+    /// whose Pyth word is merely slow. Packs into Config slot 2 after
+    /// requestTimeoutHours (epochHours 2 + requestTimeoutHours 2 + this 2 + the
+    /// 6 bytes before them = 12 of 32); Config stays at three slots. Validated
+    /// `>= requestTimeoutHours` (hence `> 0`) at deploy.
+    uint16 outsiderTimeoutHours;
 }

@@ -8,12 +8,12 @@ import {Config} from "../src/PortalLabTypes.sol";
 import {PythEntropySource} from "../src/PythEntropySource.sol";
 
 /// @notice Deployment script for PortalLab.
-/// @dev Run with the private key supplied externally via --private-key or
-/// PRIVATE_KEY env var. Never put a key in this file.
+/// @dev Sign with the encrypted Foundry keystore only. Never pass a raw key:
+/// no --private-key flag, no PRIVATE_KEY env var, never a key in this file.
 ///
-/// Example (Monad testnet):
+/// Example (Monad testnet, run from contracts/; full procedure in docs/DEPLOY.md):
 ///   forge script script/Deploy.s.sol --rpc-url monad_testnet --broadcast \
-///     --verify --private-key $PRIVATE_KEY
+///     --account portal-deployer
 ///
 /// The script prints the deployed address and key configuration parameters so
 /// the deploy log shows exactly what landed on chain.
@@ -33,14 +33,17 @@ contract DeployScript is Script {
         console.log("Survey, blind rescue and spawn draws are delivered by a");
         console.log("fulfillment callback and are NOT knowable before the");
         console.log("request transaction lands. Stuck requests can be cancelled");
-        console.log("by anyone after the real-time timeout (cancelDeferred).");
+        console.log("by the player after requestTimeoutHours, by anyone else");
+        console.log("after outsiderTimeoutHours (cancelDeferred).");
         console.log("==========================================================");
 
         console.log("Deploying PortalLab with:");
         console.log("  hpStart        =", cfg.hpStart);
         console.log("  hpMax          =", cfg.hpMax);
         console.log("  secPerHour     =", cfg.secPerHour);
-        console.log("  maxSpawnsPerTx =", cfg.maxSpawnsPerTx);
+        console.log("  epochHours     =", cfg.epochHours);
+        console.log("  requestTimeoutHours  =", cfg.requestTimeoutHours);
+        console.log("  outsiderTimeoutHours =", cfg.outsiderTimeoutHours);
 
         vm.startBroadcast();
         // The randomness source is a separate contract (Ticket 4.4 §1.3): the only

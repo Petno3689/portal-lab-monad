@@ -35,7 +35,7 @@ contract SettleTest is Test {
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
-    /// @dev Minimal active game: started at BASE, hp 50 (hpStart), full crew.
+    /// @dev Minimal active game: started at BASE, hp 50 (a fixed test value, not hpStart since the 16 Oct rebalance), full crew.
     function _game() internal pure returns (Game memory g) {
         g.startedAt = BASE;
         g.lastTickAt = BASE;
@@ -452,8 +452,8 @@ contract SettleTest is Test {
 
     /// @dev Three identical games started at BASE. settle() is called at 10^3,
     /// 10^5, and 10^7 game hours later. diedAtHour must be the same for all
-    /// three and must equal 124 (analytically computed: fill hour 114 + 10 h
-    /// overflow with hpOverflowPerHour=5 and hpStart=50). Guards the binary
+    /// three and must equal 100 (analytically computed: fill hour 84 + 16 h
+    /// overflow with hpOverflowPerHour=5 and hpStart=80). Guards the binary
     /// search in TimeLib._fillHour against off-by-one mutations.
     function test_4_1_diedAtHour_independent_of_settle_time() public {
         address a1 = address(0xA001);
@@ -483,7 +483,9 @@ contract SettleTest is Test {
         // Secondary sanity check only: this literal tracks the seeded starting
         // spawn pressure (ticket 8.1) and moves with it; the equalities above are
         // the real assertion.
-        assertEq(h1, 97, "expected death hour is 97 for default config");
+        // Fill hour: 30_000 + 1000h + h(h-1) >= 120_000 -> h = 84 (h=83: 89_806 < 90_000).
+        // Overflow: 80 hp / 5 per hour = 16 h. 84 + 16 = 100.
+        assertEq(h1, 100, "expected death hour is 100 for default config");
     }
 
     // ── 4.2: game dies during absence, then startGame → no GameForfeited ──────

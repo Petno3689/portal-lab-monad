@@ -204,8 +204,8 @@ contract TwoPhaseSurveyTest is Test {
         assertFalse(g.finished, "game still alive");
         // Observer that walked in died with the portal: not returned to the pool.
         assertEq(g.observersFree, 2, "observer lost in the collapse, not refunded");
-        // HP took the collapse (base 20 + 1 death [the observer] * 10 = 30).
-        assertEq(g.hp, 70, "collapse cost HP");
+        // HP took the collapse (base 20 + 1 death [the observer] * 8 = 28).
+        assertEq(g.hp, 72, "collapse cost HP"); // 100 - 28
     }
 
     // ── startGame while a survey is pending (owner's call: deferral dies) ─────────

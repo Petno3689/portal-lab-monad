@@ -1,0 +1,31 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash(git add *)", "Bash(git * add *)", "PowerShell(git add *)", "PowerShell(git * add *)",
+      "Bash(git commit *)", "Bash(git * commit *)", "PowerShell(git commit *)", "PowerShell(git * commit *)",
+      "Bash(git reset *)", "Bash(git * reset *)", "PowerShell(git reset *)", "PowerShell(git * reset *)",
+      "Bash(git restore *)", "Bash(git * restore *)", "PowerShell(git restore *)", "PowerShell(git * restore *)",
+      "Bash(git checkout *)", "Bash(git * checkout *)", "PowerShell(git checkout *)", "PowerShell(git * checkout *)",
+      "Bash(git switch *)", "Bash(git * switch *)", "PowerShell(git switch *)", "PowerShell(git * switch *)",
+      "Bash(git stash *)", "Bash(git * stash *)", "PowerShell(git stash *)", "PowerShell(git * stash *)",
+      "Bash(git merge *)", "Bash(git * merge *)", "PowerShell(git merge *)", "PowerShell(git * merge *)",
+      "Bash(git rebase *)", "Bash(git * rebase *)", "PowerShell(git rebase *)", "PowerShell(git * rebase *)",
+      "Bash(git cherry-pick *)", "Bash(git * cherry-pick *)", "PowerShell(git cherry-pick *)", "PowerShell(git * cherry-pick *)",
+      "Bash(git revert *)", "Bash(git * revert *)", "PowerShell(git revert *)", "PowerShell(git * revert *)",
+      "Bash(git rm *)", "Bash(git * rm *)", "PowerShell(git rm *)", "PowerShell(git * rm *)",
+      "Bash(git mv *)", "Bash(git * mv *)", "PowerShell(git mv *)", "PowerShell(git * mv *)",
+      "Bash(git clean *)", "Bash(git * clean *)", "PowerShell(git clean *)", "PowerShell(git * clean *)",
+      "Bash(git push *)", "Bash(git * push *)", "PowerShell(git push *)", "PowerShell(git * push *)",
+      "Bash(git pull *)", "Bash(git * pull *)", "PowerShell(git pull *)", "PowerShell(git * pull *)",
+      "Bash(git apply *)", "Bash(git * apply *)", "PowerShell(git apply *)", "PowerShell(git * apply *)",
+      "Bash(git am *)", "Bash(git * am *)", "PowerShell(git am *)", "PowerShell(git * am *)",
+      "Bash(git update-index *)", "Bash(git * update-index *)", "PowerShell(git update-index *)", "PowerShell(git * update-index *)",
+      "Bash(git update-ref *)", "Bash(git * update-ref *)", "PowerShell(git update-ref *)", "PowerShell(git * update-ref *)",
+      "Bash(* --broadcast*)", "Bash(* --private-key*)", "Bash(* --account*)",
+      "Bash(* --keystore*)", "Bash(* --mnemonic*)", "Bash(* --interactive*)",
+      "PowerShell(* --broadcast*)", "PowerShell(* --private-key*)", "PowerShell(* --account*)",
+      "PowerShell(* --keystore*)", "PowerShell(* --mnemonic*)", "PowerShell(* --interactive*)",
+      "Read(~/.foundry/keystores/**)", "Read(**/.env)", "Read(**/.env.*)"
+    ]
+  }
+}

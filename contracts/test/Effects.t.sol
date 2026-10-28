@@ -340,8 +340,8 @@ contract EffectsTest is Test {
         g.rescuersFree = 1; // one inside
         _write(g, p);
         harness.act(0, Action.Close);
-        // deaths = 2 creatures + observer + rescuer = 4; hpLost = 10*4 = 40 (no base).
-        assertEq(_game_().hp, 60); // 100 - 40
+        // deaths = 2 creatures + observer + rescuer = 4; hpLost = 8*4 = 32 (no base).
+        assertEq(_game_().hp, 68); // 100 - 32
         // Crew inside died: pools NOT incremented.
         assertEq(_game_().observersFree, 2);
         assertEq(_game_().rescuersFree, 1);
@@ -367,9 +367,9 @@ contract EffectsTest is Test {
         p.hoursToCollapse = 6; // <= closeHoursAtMost => allowed
         _write(_game(), p);
         harness.act(0, Action.Close);
-        // deaths = creaturesHi = 4 (upper bound, creaturesKnown false); hpLost = 10*4 = 40.
-        // If `creatures` (9) were read, hpLost would be 90; if midpoint, hpLost would be 25.
-        assertEq(_game_().hp, 60); // 100 - 40
+        // deaths = creaturesHi = 4 (upper bound, creaturesKnown false); hpLost = 8*4 = 32.
+        // If `creatures` (9) were read, hpLost would be 72; if midpoint (2.5), hpLost would be 20.
+        assertEq(_game_().hp, 68); // 100 - 32
         assertEq(_game_().openPortals, 0);
     }
 
@@ -379,7 +379,7 @@ contract EffectsTest is Test {
         Portal memory p = _portal();
         p.stability = 30; // allows close
         p.observerInside = true;
-        p.rescuerInside = true; // deaths = 2 + 1 + 1 = 4, hpLost = 10*4 = 40
+        p.rescuerInside = true; // deaths = 2 + 1 + 1 = 4, hpLost = 8*4 = 32
         Game memory g = _game();
         g.hp = 10;
         g.observersFree = 2;
@@ -390,7 +390,7 @@ contract EffectsTest is Test {
         emit PortalLab.GameOver(player, 0);
         harness.act(0, Action.Close);
 
-        assertEq(_game_().hp, 0); // 10 - 60 -> floored at 0
+        assertEq(_game_().hp, 0); // 10 - 32 -> floored at 0
         assertTrue(_game_().finished);
         assertEq(_game_().diedAtHour, 0); // hoursElapsed is 0 until ticket 1.6
     }
@@ -427,13 +427,13 @@ contract EffectsTest is Test {
         Portal memory p = _portal();
         p.stability = 30;
         p.observerInside = true;
-        p.rescuerInside = true; // deaths 4, hpLost = 10*4 = 40 (no base)
+        p.rescuerInside = true; // deaths 4, hpLost = 8*4 = 32 (no base)
         Game memory g = _game();
         g.observersFree = 2;
         g.rescuersFree = 1;
         _write(g, p);
         vm.expectEmit(true, true, false, true);
-        emit PortalLab.PortalClosed(player, 0, 4, 40, 0);
+        emit PortalLab.PortalClosed(player, 0, 4, 32, 0);
         harness.act(0, Action.Close);
     }
 

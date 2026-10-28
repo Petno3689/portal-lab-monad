@@ -55,6 +55,19 @@ contract EpochSpawnTest is Test {
         }
     }
 
+    /// @dev A started game made durable: hp 60_000 and nothing pinned. With
+    /// epochHours 36 the first edge is hour 35, and a run with startGame's hp can
+    /// die before reaching it; these tests are about WHEN a word is fetched, not
+    /// about surviving, so the run is given room (setup only, Ticket "36").
+    function _startDurable() internal {
+        harness.startGame();
+        Game memory seeded = _game();
+        seeded.hp = 60_000;
+        harness.setGame(player, seeded);
+        // setGame pins a generous coverage of its own; put "nothing pinned" back.
+        harness.setCoverage(player, 0, 0);
+    }
+
     function _reqCount() internal view returns (uint64) {
         return source.lastRequestId();
     }
@@ -93,8 +106,8 @@ contract EpochSpawnTest is Test {
 
     function test_OneAbsenceOneRequest() public {
         // A high-HP game with nothing pinned yet, so a twenty-epoch absence does
-        // not die to the deterministic overflow before we return (an empty lab from
-        // a 50-HP start would overflow around hour 124 — see §5.5 — which is why we
+        // not die to the deterministic overflow before we return (a run with
+        // startGame's HP can die before that point — see §5.5 — which is why we
         // seed a durable game here instead of relying on startGame's HP).
         Game memory g;
         g.startedAt = BASE;
@@ -107,16 +120,18 @@ contract EpochSpawnTest is Test {
         harness.setCoverage(player, uint256(keccak256("seed")), 0); // nothing pinned
         assertEq(_reqCount(), 0, "set-up requests no word");
 
-        // Leave for twenty epochs, come back, advance in a single paid sync.
-        _warpHours(20 * EPH);
+        // Leave for six epochs (it was twenty with epochHours 12: at 36 that is
+        // 720 hours, and even 60_000 hp dies to the ramping pressure at hour 297),
+        // come back, advance in a single paid sync.
+        _warpHours(6 * EPH);
         harness.sync{value: 1}(player);
-        assertTrue(harness.getPending(player).active, "crossing twenty epochs defers");
-        assertEq(_reqCount(), 1, "exactly one request covers all twenty epochs");
+        assertTrue(harness.getPending(player).active, "crossing six epochs defers");
+        assertEq(_reqCount(), 1, "exactly one request covers all six epochs");
         source.reveal(harness.getPending(player).requestId);
         assertEq(_reqCount(), 1, "reveal makes no further request");
 
         // The world reached the live hour; coverage now spans through this epoch.
-        assertEq(uint256(_game().hoursElapsed), 20 * EPH, "world advanced to now");
+        assertEq(uint256(_game().hoursElapsed), 6 * EPH, "world advanced to now");
     }
 
     // ── 4.5: startGame opens with zero portals and fetches nothing ────────────
@@ -132,10 +147,10 @@ contract EpochSpawnTest is Test {
     // ── 6.6: sync (unpaid) and settle never request ───────────────────────────
 
     function test_FreeSyncAndSettleNeverRequest() public {
-        harness.startGame();
-        // A modest absence that does NOT reach the deterministic overflow (an empty
-        // 50-HP lab survives well past five epochs), so the game is genuinely
-        // unfinished at the pinned edge.
+        _startDurable();
+        // A modest absence that does NOT reach the deterministic overflow (a run
+        // with startGame's HP can die before then, which is why the game is seeded
+        // durable), so the game is genuinely unfinished at the pinned edge.
         _warpHours(5 * EPH);
 
         // Unpaid sync: advances only to the pinned edge (none yet → stays put),
@@ -167,7 +182,7 @@ contract EpochSpawnTest is Test {
     // ── 6.5: an in-epoch action with no roll is free and single-phase ─────────
 
     function test_InEpochActionIsFreeAndSinglePhase() public {
-        harness.startGame();
+        _startDurable();
         // Advance a few hours INSIDE epoch 0 so a portal exists but no edge is hit.
         _warpHours(EPH - 2);
         _advance();
@@ -195,6 +210,16 @@ contract EpochSpawnTest is Test {
 
     function test_PastDoesNotChange() public {
         harness.startGame();
+        // Portals are born at maturity while the player is away, and their
+        // collapses cost HP: a run with startGame's HP can die before the second word. Seed
+        // a durable lab so the property (a new word never re-rolls the past) is
+        // what the test measures.
+        Game memory seeded = _game();
+        seeded.hp = 60_000;
+        harness.setGame(player, seeded);
+        // setGame pins a generous coverage of its own; put "nothing pinned" back so
+        // the words are fetched by the epochs below, as in a played game.
+        harness.setCoverage(player, 0, 0);
 
         // Live through a couple of epochs so several portals are pinned to the
         // words delivered so far.
@@ -233,7 +258,7 @@ contract EpochSpawnTest is Test {
     // ── 6.4: crossing AND rolling — one request serves both ───────────────────
 
     function test_CombinedCrossAndSurvey_OneRequest() public {
-        harness.startGame();
+        _startDurable();
         // Advance to hour 11 (still epoch 0): the first portal appears at hour 10
         // once accrued pressure reaches spawnCostUnits, so one portal is now open.
         _warpHours(EPH - 1);
@@ -271,7 +296,7 @@ contract EpochSpawnTest is Test {
     // ── 6.7: preview stops at the edge and equals an unpaid sync ──────────────
 
     function test_PreviewStopsAtEdgeAndMatchesSync() public {
-        harness.startGame();
+        _startDurable();
         // Pin epoch 0 by advancing partway into it.
         _warpHours(EPH - 4);
         _advance();
@@ -307,34 +332,49 @@ contract EpochSpawnTest is Test {
     // ── 8.1: worst-case epoch-crossing reveal gas ─────────────────────────────
 
     /// Return after twenty epochs to a full twelve-portal lab, so the reveal's
-    /// catch-up processes a wave of collapses, refills freed slots with fresh
-    /// spawns, and survives (high HP keeps the §5.5 overflow from ending it first).
-    /// This is the heaviest `receiveWord` path. The Pyth callback limit is
-    /// 1 000 000 gas; a blocker is anything closer than a third of it (>= 666 667).
+    /// catch-up processes a wave of collapses and refills every freed slot with a
+    /// birth at once. This is the heaviest `receiveWord` path a REAL game can
+    /// reach (hp <= hpMax). The Pyth callback limit is 1 000 000 gas; a blocker is
+    /// anything closer than a third of it (>= 666 667).
+    ///
+    /// Why this state. Births now happen at maturity inside the window, so the
+    /// work of a reveal grows with the number of events it meets, and HP is what
+    /// bounds that number: every collapse costs HP and a full lab drains it. The
+    /// heaviest reachable shape keeps the lab full at the edge (so the abandoned-lab
+    /// rule beyond the edge does not end the run before the word arrives), makes the
+    /// twelve stored collapses as cheap as possible (surveyed and empty: 3 hp each),
+    /// and holds enough debt to refill each freed slot immediately. A reviewer
+    /// sweep over debt 0..200 000, collapse staggers 0..3 hours, absences of 1, 2
+    /// and 20 epochs and three portal types peaked at about 595 000 gas, with this
+    /// debt and stagger; that was under the config before 16 Oct. On 16 Oct
+    /// (hpStart 80, hpCollapsePerDeath 8, ramp 2) a 1 584-configuration sweep with
+    /// cold storage peaked at about 605 000, and this stand measures about 609 000.
+    /// (The former stand had 60 000 hp: unreachable, and with
+    /// births at maturity it walks the full 64-event fuse.)
     function test_Gas_CrossingRevealWorstCase_UnderBudget() public {
         Game memory g;
         g.startedAt = BASE;
         g.lastTickAt = BASE;
-        g.hp = 60_000; // survive the wave so the reveal does maximal work
+        g.hp = 100; // hpMax: the most a real game can hold, so the most events it can meet
         g.power = 100;
         g.observersFree = 3;
         g.rescuersFree = 2;
         g.openPortals = 12;
+        g.spawnDebt = 110_000; // eleven portals' worth: every freed slot refills at once
         harness.setGame(player, g);
         harness.setCoverage(player, uint256(keccak256("seed")), 0); // nothing pinned
 
-        // Twelve occupied portals collapsing at staggered hours 1..12, each holding
-        // creatures (the costlier collapse branch), snapshotted at BASE.
+        // Twelve occupied portals collapsing at staggered hours 1..12, surveyed and
+        // empty (the cheapest collapse, so the most of them before death),
+        // snapshotted at BASE.
         for (uint8 i = 0; i < 12; i++) {
             Portal memory p;
             p.status = PortalStatus.Open;
             p.portalType = PortalType.LongLived;
             p.snapshotAt = BASE;
             p.hoursToCollapse = uint16(i + 1);
+            p.surveyed = true;
             p.creaturesKnown = true;
-            p.creatures = 2;
-            p.creaturesLo = 2;
-            p.creaturesHi = 2;
             harness.setPortal(player, i, p);
         }
 
@@ -350,7 +390,9 @@ contract EpochSpawnTest is Test {
 
         console2.log("crossing-reveal worst-case gas used (incl. source dispatch):", used);
         assertLt(used, 666_667, "crossing reveal must stay well under the 1M callback limit");
-        assertFalse(harness.getGame(player).finished, "survived the wave");
+        // The wave really happened: the stored portals collapsed and their slots
+        // were refilled by births inside the window.
+        assertGe(uint256(harness.getGame(player).spawnCount), 10, "freed slots were refilled");
         assertFalse(harness.getPending(player).active, "deferral resolved");
     }
 

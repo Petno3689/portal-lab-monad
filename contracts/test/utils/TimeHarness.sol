@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {Game, Portal, Config, PortalTypeParams, MAX_OPEN_PORTALS} from "../../src/PortalLabTypes.sol";
+import {
+    Game, Portal, Config, PortalTypeParams, MAX_OPEN_PORTALS, MAX_CATCHUP_EVENTS
+} from "../../src/PortalLabTypes.sol";
 import {TimeLib} from "../../src/TimeLib.sol";
 
 /// @title TimeHarness — external face of `TimeLib.catchUp`.
@@ -31,9 +33,9 @@ contract TimeHarness {
         returns (
             Game memory,
             Portal[MAX_OPEN_PORTALS] memory,
-            TimeLib.Collapse[MAX_OPEN_PORTALS] memory,
+            TimeLib.Collapse[MAX_CATCHUP_EVENTS] memory,
             uint8,
-            TimeLib.Spawn[MAX_OPEN_PORTALS] memory,
+            TimeLib.Spawn[MAX_CATCHUP_EVENTS] memory,
             uint8,
             bool
         )

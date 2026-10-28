@@ -15,7 +15,7 @@ import {PortalLabHarness} from "./utils/PortalLabHarness.sol";
 /// The RNG is the stub `RandomStub` (keccak of player + nonce + salt), so exact
 /// values are not asserted; tests check ranges, determinism, independence and
 /// the collapse-to-point / narrow invariants. `DefaultConfig`:
-/// rangeWidenPerHour 1, deafNarrowThreshold 10.
+/// rangeWidenPerHour 1.
 contract SurveyTest is Test {
     PortalLabHarness internal harness;
     address internal player;
@@ -273,6 +273,7 @@ contract SurveyTest is Test {
 
         Portal memory a = _portal_(0);
         assertFalse(a.surveyed, "still unsurveyed");
+        assertTrue(a.narrowedOnce, "narrowedOnce set by the first pass");
         // Each range strictly narrower and inside the old one.
         assertTrue(a.energyLo >= 20 && a.energyHi <= 100, "energy inside old");
         assertLt(a.energyHi - a.energyLo, 80, "energy narrower");
@@ -282,29 +283,45 @@ contract SurveyTest is Test {
         assertLt(a.creaturesHi - a.creaturesLo, 4, "creatures narrower");
     }
 
-    // ── Group 6: Deaf portal, narrow enough → precise ─────────────────────────
+    // ── Group 6: Deaf portal, second survey reads exact ───────────────────────
 
     function test_DeafNarrowsToPrecise() public {
-        Portal memory p = _baseMem();
-        p.portalType = PortalType.Deaf;
-        // All three widths already <= deafNarrowThreshold (10).
-        p.energyLo = 20;
-        p.energyHi = 30;
-        p.stabilityLo = 40;
-        p.stabilityHi = 50;
-        p.creaturesLo = 1;
-        p.creaturesHi = 3;
+        _write(_game(), _deafWide());
+
+        _surveyAndReveal(0); // first pass: narrows, marks the portal
+        Portal memory n = _portal_(0);
+        assertTrue(n.narrowedOnce, "flag set");
+        assertFalse(n.surveyed, "not surveyed yet");
+
+        harness.act(0, Action.RecallObserver);
+        _surveyAndReveal(0); // second pass: exact
+
+        Portal memory a = _portal_(0);
+        assertTrue(a.surveyed, "now surveyed");
+        assertTrue(a.creaturesKnown, "creatures known");
+        assertTrue(a.energy >= n.energyLo && a.energy <= n.energyHi, "energy inside narrowed range");
+        assertTrue(a.stability >= n.stabilityLo && a.stability <= n.stabilityHi, "stability inside narrowed range");
+        assertTrue(a.creatures >= n.creaturesLo && a.creatures <= n.creaturesHi, "creatures inside narrowed range");
+        assertEq(a.energyLo, a.energy);
+        assertEq(a.energyHi, a.energy);
+        assertEq(a.stabilityLo, a.stability);
+        assertEq(a.stabilityHi, a.stability);
+        assertEq(a.creaturesLo, a.creatures);
+        assertEq(a.creaturesHi, a.creatures);
+    }
+
+    function test_DeafWithFlag_WideRangesReadExact() public {
+        Portal memory p = _deafWide(); // widths 80 / 80
+        p.narrowedOnce = true;
         _write(_game(), p);
 
         _surveyAndReveal(0);
 
         Portal memory a = _portal_(0);
-        assertTrue(a.surveyed, "now surveyed");
-        assertTrue(a.energy >= 20 && a.energy <= 30, "energy in range");
-        assertTrue(a.stability >= 40 && a.stability <= 50, "stability in range");
-        assertTrue(a.creatures >= 1 && a.creatures <= 3, "creatures in range");
+        assertTrue(a.surveyed, "surveyed on the next survey despite wide ranges");
         assertEq(a.energyLo, a.energy);
         assertEq(a.energyHi, a.energy);
+        assertTrue(a.energy >= 20 && a.energy <= 100, "energy in range");
     }
 
     // ── Group 7: Deaf portal still needs a second pass ────────────────────────
@@ -397,10 +414,14 @@ contract SurveyTest is Test {
         p0.creaturesLo = 1;
         p0.creaturesHi = 4;
         p0.hoursToCollapse = 5; // <= closeHoursAtMost (6)
-        _write(_game(), p0);
+        // Births at maturity during the 100 hours below would otherwise drain the
+        // default 100 HP and end the game; a durable lab keeps the close possible.
+        Game memory durable = _game();
+        durable.hp = 60_000;
+        _write(durable, p0);
 
         vm.expectEmit(true, true, false, true);
-        emit PortalLab.PortalClosed(player, 0, 4, 40, 0); // deaths creaturesHi=4, hpLost 10*4=40
+        emit PortalLab.PortalClosed(player, 0, 4, 32, 0); // deaths creaturesHi=4, hpLost 8*4=32
         harness.act(0, Action.Close);
 
         // After 100 hours of widening the upper bound stays at 4 (creatures fixed).
@@ -409,11 +430,11 @@ contract SurveyTest is Test {
         p1.creaturesLo = 1;
         p1.creaturesHi = 4;
         p1.hoursToCollapse = 105; // survives 100 h, then 5 <= 6 → closable
-        _write(_game(), p1);
+        _write(durable, p1);
 
         _warpHours(100);
         vm.expectEmit(true, true, false, true);
-        emit PortalLab.PortalClosed(player, 0, 4, 40, 100);
+        emit PortalLab.PortalClosed(player, 0, 4, 32, 100);
         harness.act(0, Action.Close);
     }
 

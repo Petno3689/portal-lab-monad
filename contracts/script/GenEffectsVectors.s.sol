@@ -31,7 +31,7 @@ import {EffectsHarness} from "../test/utils/EffectsHarness.sol";
 /// The set is a modest RANDOM part (deterministic: keccak of a tag and the index)
 /// PLUS a large DIRECTED part. Random alone never reaches the interesting branches
 /// of a nine-way dispatcher with short bodies (a clamp at 100, a blind evacuation
-/// of the last creature, a close at hp == loss, the deafNarrowThreshold edge), so
+/// of the last creature, a close at hp == loss, the Deaf narrowedOnce flag), so
 /// each is built on purpose. `run` aborts unless every entry of the coverage list
 /// (`_register`) is hit by at least one vector — if you add a branch to EffectsLib,
 /// add a tag and a directed vector.
@@ -123,10 +123,10 @@ contract GenEffectsVectors is Script {
     // ── configs and type parameters ──────────────────────────────────────────
 
     /// @dev Four configs, each built fresh (memory structs are references).
-    ///   0 — the deployed GameConfig (heal 3, hpMax 100, 10 HP per death, threshold 10);
-    ///   1 — heal 40, 1000 HP per death (loss overflows uint16), cooldown 65535, threshold 0;
-    ///   2 — hpMax and heal 65535, bonus uint32 max, cooldown 0, threshold 255;
-    ///   3 — nothing heals or hurts, bonus 0, cooldown 3, threshold 4.
+    ///   0 — the deployed GameConfig (heal 3, hpMax 100, 10 HP per death);
+    ///   1 — heal 40, 1000 HP per death (loss overflows uint16), cooldown 65535;
+    ///   2 — hpMax and heal 65535, bonus uint32 max, cooldown 0;
+    ///   3 — nothing heals or hurts, bonus 0, cooldown 3.
     function _configs() private pure returns (Config[] memory cfgs) {
         cfgs = new Config[](CONFIG_COUNT);
         cfgs[0] = GameConfig.config();
@@ -135,7 +135,6 @@ contract GenEffectsVectors is Script {
         c1.healPerCreature = 40;
         c1.hpCollapsePerDeath = 1000;
         c1.rescuerCooldownHours = 65535;
-        c1.deafNarrowThreshold = 0;
         c1.closePressureBonus = 1;
         cfgs[1] = c1;
 
@@ -145,7 +144,6 @@ contract GenEffectsVectors is Script {
         c2.hpCollapsePerDeath = 65535;
         c2.closePressureBonus = 4294967295;
         c2.rescuerCooldownHours = 0;
-        c2.deafNarrowThreshold = 255;
         cfgs[2] = c2;
 
         Config memory c3 = GameConfig.config();
@@ -153,7 +151,6 @@ contract GenEffectsVectors is Script {
         c3.hpCollapsePerDeath = 0;
         c3.closePressureBonus = 0;
         c3.rescuerCooldownHours = 3;
-        c3.deafNarrowThreshold = 4;
         cfgs[3] = c3;
     }
 
@@ -602,6 +599,12 @@ contract GenEffectsVectors is Script {
         p.creatures = 9;
     }
 
+    /// @dev Mark the portal as already narrowed once (a Deaf portal after its first survey).
+    function _flagged(Portal memory p) private pure returns (Portal memory) {
+        p.narrowedOnce = true;
+        return p;
+    }
+
     function _directedSurvey(Vec[] memory vs, uint256 n) private pure returns (uint256) {
         // Precise types read exact whatever the width.
         n = _addS(vs, n, "survey: precise type, wide ranges", _ranged(80, 70, 20), 0, 0, 12345);
@@ -610,27 +613,27 @@ contract GenEffectsVectors is Script {
         n = _addS(vs, n, "survey: precise type, word zero", _ranged(30, 30, 3), 0, 4, 0);
         n = _addS(vs, n, "survey: precise type, word uint256 max", _ranged(30, 30, 3), 0, 0, type(uint256).max);
 
-        // Deaf (tp 2), threshold 10: the boundary, on both sides, for each range in turn.
-        n = _addS(vs, n, "survey: deaf, all widths 9 (below threshold)", _ranged(9, 9, 9), 0, 2, 4242);
-        n = _addS(vs, n, "survey: deaf, all widths exactly 10", _ranged(10, 10, 10), 0, 2, 4242);
-        n = _addS(vs, n, "survey: deaf, energy width exactly 10", _ranged(10, 3, 3), 0, 2, 99);
-        n = _addS(vs, n, "survey: deaf, stability width exactly 10", _ranged(3, 10, 3), 0, 2, 99);
-        n = _addS(vs, n, "survey: deaf, creatures width exactly 10", _ranged(3, 3, 10), 0, 2, 99);
-        n = _addS(vs, n, "survey: deaf, energy width 11 narrows", _ranged(11, 3, 3), 0, 2, 99);
-        n = _addS(vs, n, "survey: deaf, stability width 11 narrows", _ranged(3, 11, 3), 0, 2, 99);
-        n = _addS(vs, n, "survey: deaf, creatures width 11 narrows", _ranged(3, 3, 11), 0, 2, 99);
-        n = _addS(vs, n, "survey: deaf, energy 11 others 10 narrows", _ranged(11, 10, 10), 0, 2, 7);
-        n = _addS(vs, n, "survey: deaf, one wide among two exact", _ranged(10, 11, 10), 0, 2, 7);
-        n = _addS(vs, n, "survey: deaf, far above threshold", _ranged(60, 80, 20), 0, 2, 31337);
-        n = _addS(vs, n, "survey: deaf, point ranges", _ranged(0, 0, 0), 0, 2, 5);
-        n = _addS(vs, n, "survey: deaf, synthetic deaf type 5", _ranged(60, 80, 20), 0, 5, 8);
+        // Precise types ignore the flag.
+        n = _addS(vs, n, "survey: precise type, flag set", _flagged(_ranged(80, 70, 20)), 0, 0, 12345);
+        n = _addS(vs, n, "survey: precise type, flag set (resonant)", _flagged(_ranged(5, 5, 5)), 0, 3, 777);
 
-        // Other thresholds: 0 (config 1), 255 (config 2), 4 (config 3).
-        n = _addS(vs, n, "survey: threshold 0, width 0 reads exact", _ranged(0, 0, 0), 1, 2, 3);
-        n = _addS(vs, n, "survey: threshold 0, width 1 narrows", _ranged(1, 0, 0), 1, 2, 3);
-        n = _addS(vs, n, "survey: threshold 255 always reads exact", _ranged(100, 100, 100), 2, 2, 3);
-        n = _addS(vs, n, "survey: threshold 4, width exactly 4", _ranged(4, 4, 4), 3, 2, 3);
-        n = _addS(vs, n, "survey: threshold 4, width 5 narrows", _ranged(4, 5, 4), 3, 2, 3);
+        // Deaf (tp 2) first pass: narrows, sets the flag, whatever the widths.
+        n = _addS(vs, n, "survey: deaf first pass, wide ranges", _ranged(60, 80, 20), 0, 2, 31337);
+        n = _addS(vs, n, "survey: deaf first pass, narrow ranges", _ranged(3, 3, 3), 0, 2, 99);
+        n = _addS(vs, n, "survey: deaf first pass, all widths 9", _ranged(9, 9, 9), 0, 2, 4242);
+        n = _addS(vs, n, "survey: deaf first pass, all widths 10", _ranged(10, 10, 10), 0, 2, 4242);
+        n = _addS(vs, n, "survey: deaf first pass, one wide among two narrow", _ranged(10, 11, 10), 0, 2, 7);
+        n = _addS(vs, n, "survey: deaf first pass, point ranges", _ranged(0, 0, 0), 0, 2, 5);
+        n = _addS(vs, n, "survey: deaf first pass, synthetic deaf type 5", _ranged(60, 80, 20), 0, 5, 8);
+
+        // Deaf with the flag (narrowed by an earlier survey): reads exact.
+        n = _addS(vs, n, "survey: deaf second pass, wide ranges", _flagged(_ranged(60, 80, 20)), 0, 2, 31337);
+        n = _addS(vs, n, "survey: deaf second pass, narrow ranges", _flagged(_ranged(3, 3, 3)), 0, 2, 99);
+        n = _addS(vs, n, "survey: deaf second pass, point ranges", _flagged(_ranged(0, 0, 0)), 0, 2, 5);
+        n = _addS(vs, n, "survey: deaf second pass, word zero", _flagged(_ranged(30, 30, 3)), 0, 2, 0);
+        n = _addS(vs, n, "survey: deaf second pass, word uint256 max", _flagged(_ranged(30, 30, 3)), 0, 2, type(uint256).max);
+        n = _addS(vs, n, "survey: deaf second pass, synthetic deaf type 5", _flagged(_ranged(60, 80, 20)), 0, 5, 8);
+        n = _addS(vs, n, "survey: deaf second pass, other config", _flagged(_ranged(40, 40, 10)), 3, 2, 3);
 
         // Narrowing at the edges: the new bounds clip to the old ones.
         Portal memory p = _ranged(20, 20, 12);
@@ -651,25 +654,23 @@ contract GenEffectsVectors is Script {
         p = _ranged(0, 0, 0);
         p.energyLo = 0;
         p.energyHi = 255;
-        n = _addS(vs, n, "survey: threshold 255 and a full-width range reads exact", p, 2, 2, 2024);
+        n = _addS(vs, n, "survey: deaf second pass, full-width energy range", _flagged(p), 0, 2, 2024);
 
-        // Reverts: an inverted range panics, and WHICH path it panics on depends on the
-        // short-circuit order of the exactness test.
+        // Reverts: an inverted range panics on the narrow path (first pass) or on the
+        // exact draw (precise type, or a Deaf portal with the flag).
         p = _ranged(3, 3, 3);
         p.energyLo = 30;
         p.energyHi = 20;
-        n = _addS(vs, n, "survey: deaf, inverted energy range (width check panics)", p, 0, 2, 1);
+        n = _addS(vs, n, "survey: deaf first pass, inverted energy range (narrow panics)", p, 0, 2, 1);
         p = _ranged(3, 3, 3);
         p.creaturesLo = 4;
         p.creaturesHi = 2;
-        n = _addS(vs, n, "survey: deaf, inverted creatures range after two fine ones", p, 0, 2, 1);
-        p = _ranged(20, 3, 3);
+        n = _addS(vs, n, "survey: deaf first pass, inverted creatures range (narrow panics)", p, 0, 2, 1);
+        p = _flagged(_ranged(3, 3, 3));
         p.stabilityLo = 50;
         p.stabilityHi = 40;
-        n = _addS(vs, n, "survey: deaf, wide energy short-circuits past an inverted stability range into narrow (panics there)", p, 0, 2, 1);
+        n = _addS(vs, n, "survey: deaf second pass, inverted stability range (draw panics)", p, 0, 2, 1);
         p = _ranged(3, 3, 3);
-        p.stabilityLo = 50;
-        p.stabilityHi = 40;
         n = _addS(vs, n, "survey: precise type, inverted stability range (draw panics)", p, 0, 0, 1);
         p = _ranged(3, 3, 3);
         p.creaturesLo = 9;
@@ -846,7 +847,8 @@ contract GenEffectsVectors is Script {
         uint256 x = _r(i, "portal");
         p.id = uint16((x >> 0) % 5000);
         p.portalType = PortalType((x >> 16) % 5);
-        p.nameIndex = uint16((x >> 24) % 24);
+        p.nameIndex = uint8((x >> 24) % 24);
+        p.narrowedOnce = (x >> 200) % 3 == 0;
         p.status = ((x >> 40) & 0xff) < 21 ? PortalStatus.Empty : ((x >> 48) % 2 == 0 ? PortalStatus.Open : PortalStatus.Questioned);
         p.surveyed = (x >> 56) % 5 != 0;
         p.observerInside = (x >> 60) % 4 == 0;
@@ -863,8 +865,7 @@ contract GenEffectsVectors is Script {
         p.creatures = (y >> 32) % 50 == 0 ? 255 : ((y >> 40) % 5 == 0 ? 0 : uint8((y >> 44) % 7));
         p.hoursToCollapse = uint16((y >> 56) % 61);
 
-        // Ranges: width mostly small enough for deaf narrowing to be interesting
-        // (threshold 10 / 4 / 0 / 255), sometimes inverted.
+        // Ranges: mostly modest widths, sometimes inverted.
         uint256 z = _r(i, "portal3");
         (p.stabilityLo, p.stabilityHi) = _range(z, 101, 40);
         (p.energyLo, p.energyHi) = _range(z >> 16, 101, 40);
@@ -982,21 +983,13 @@ contract GenEffectsVectors is Script {
         _reg(cv, "revert: evacuate overflows creaturesRescued");
         _reg(cv, "revert: close with openPortals at zero");
         _reg(cv, "survey: precise type");
-        _reg(cv, "survey: precise type ignores a width above the threshold");
-        _reg(cv, "survey: deaf, all widths below the threshold, exact");
-        _reg(cv, "survey: deaf, energy width exactly at the threshold, exact");
-        _reg(cv, "survey: deaf, stability width exactly at the threshold, exact");
-        _reg(cv, "survey: deaf, creatures width exactly at the threshold, exact");
-        _reg(cv, "survey: deaf, energy width one above the threshold, narrows");
-        _reg(cv, "survey: deaf, stability width one above the threshold, narrows");
-        _reg(cv, "survey: deaf, creatures width one above the threshold, narrows");
-        _reg(cv, "survey: deaf, far above the threshold, narrows");
+        _reg(cv, "survey: precise type, flag irrelevant");
+        _reg(cv, "survey: deaf first pass narrows and sets the flag");
+        _reg(cv, "survey: deaf with the flag reads exact");
+        _reg(cv, "survey: deaf with the flag, wide ranges, reads exact");
         _reg(cv, "survey: narrowing clips the low bound");
         _reg(cv, "survey: narrowing clips the high bound");
         _reg(cv, "survey: narrowing keeps both bounds inside");
-        _reg(cv, "survey: threshold 0");
-        _reg(cv, "survey: threshold 255");
-        _reg(cv, "survey revert: inverted range on the width check");
         _reg(cv, "survey revert: inverted range on the narrow path");
         _reg(cv, "survey revert: inverted range on the exact draw");
         _reg(cv, "reveal: positive count, rescuer walks in");
@@ -1134,51 +1127,32 @@ contract GenEffectsVectors is Script {
         _mark(cv, loss > 0 && g.hp >= loss && v.ro.hpLost == loss, "close: hpLost is the full loss when hp covers it");
     }
 
-    function _tagSurvey(Cov memory cv, Vec memory v, Config memory c, PortalTypeParams memory t) private pure {
+    function _tagSurvey(Cov memory cv, Vec memory v, Config memory, PortalTypeParams memory t) private pure {
         Portal memory p = v.p;
-        uint256 th = c.deafNarrowThreshold;
 
         if (v.reverted) {
-            // Walk the three ranges the way the contract does.
-            bool[3] memory inv = [p.energyHi < p.energyLo, p.stabilityHi < p.stabilityLo, p.creaturesHi < p.creaturesLo];
-            uint8[3] memory w = [
-                inv[0] ? 0 : p.energyHi - p.energyLo,
-                inv[1] ? 0 : p.stabilityHi - p.stabilityLo,
-                inv[2] ? 0 : p.creaturesHi - p.creaturesLo
-            ];
-            if (t.surveyPrecise) {
-                _mark(cv, _isPanic(v) && (inv[0] || inv[1] || inv[2]), "survey revert: inverted range on the exact draw");
-                return;
-            }
-            // Deaf: the width check runs left to right and stops at the first width above
-            // the threshold; an inverted range reached before that panics there.
-            bool reachedAllWidths = true;
-            for (uint256 r = 0; r < 3; r++) {
-                if (inv[r]) {
-                    _mark(cv, _isPanic(v) && reachedAllWidths, "survey revert: inverted range on the width check");
-                    _mark(cv, _isPanic(v) && !reachedAllWidths, "survey revert: inverted range on the narrow path");
-                    return;
-                }
-                if (w[r] > th) reachedAllWidths = false;
-            }
+            bool inverted = p.energyHi < p.energyLo || p.stabilityHi < p.stabilityLo || p.creaturesHi < p.creaturesLo;
+            bool onDraw = t.surveyPrecise || p.narrowedOnce;
+            _mark(cv, _isPanic(v) && inverted && onDraw, "survey revert: inverted range on the exact draw");
+            _mark(cv, _isPanic(v) && inverted && !onDraw, "survey revert: inverted range on the narrow path");
             return;
         }
 
-        uint256 we = uint256(p.energyHi) - p.energyLo;
-        uint256 ws = uint256(p.stabilityHi) - p.stabilityLo;
-        uint256 wc = uint256(p.creaturesHi) - p.creaturesLo;
-        uint256 widest = we > ws ? (we > wc ? we : wc) : (ws > wc ? ws : wc);
+        uint256 widest = _widest(p);
 
         _mark(cv, t.surveyPrecise && v.precise && v.rp.surveyed, "survey: precise type");
-        _mark(cv, t.surveyPrecise && v.precise && widest > th, "survey: precise type ignores a width above the threshold");
-        _mark(cv, !t.surveyPrecise && v.precise && widest < th, "survey: deaf, all widths below the threshold, exact");
-        _mark(cv, !t.surveyPrecise && v.precise && we == th && ws <= th && wc <= th, "survey: deaf, energy width exactly at the threshold, exact");
-        _mark(cv, !t.surveyPrecise && v.precise && ws == th && we <= th && wc <= th, "survey: deaf, stability width exactly at the threshold, exact");
-        _mark(cv, !t.surveyPrecise && v.precise && wc == th && we <= th && ws <= th, "survey: deaf, creatures width exactly at the threshold, exact");
-        _mark(cv, !t.surveyPrecise && !v.precise && we == th + 1 && ws <= th && wc <= th, "survey: deaf, energy width one above the threshold, narrows");
-        _mark(cv, !t.surveyPrecise && !v.precise && ws == th + 1 && we <= th && wc <= th, "survey: deaf, stability width one above the threshold, narrows");
-        _mark(cv, !t.surveyPrecise && !v.precise && wc == th + 1 && we <= th && ws <= th, "survey: deaf, creatures width one above the threshold, narrows");
-        _mark(cv, !t.surveyPrecise && !v.precise && widest > th + 1, "survey: deaf, far above the threshold, narrows");
+        _mark(cv, t.surveyPrecise && v.precise && p.narrowedOnce, "survey: precise type, flag irrelevant");
+        _mark(
+            cv,
+            !t.surveyPrecise && !p.narrowedOnce && !v.precise && v.rp.narrowedOnce && !v.rp.surveyed,
+            "survey: deaf first pass narrows and sets the flag"
+        );
+        _mark(cv, !t.surveyPrecise && p.narrowedOnce && v.precise && v.rp.surveyed, "survey: deaf with the flag reads exact");
+        _mark(
+            cv,
+            !t.surveyPrecise && p.narrowedOnce && v.precise && v.rp.surveyed && widest > 10,
+            "survey: deaf with the flag, wide ranges, reads exact"
+        );
         _mark(cv, !v.precise && (v.rp.energyLo == p.energyLo || v.rp.stabilityLo == p.stabilityLo || v.rp.creaturesLo == p.creaturesLo), "survey: narrowing clips the low bound");
         _mark(cv, !v.precise && (v.rp.energyHi == p.energyHi || v.rp.stabilityHi == p.stabilityHi || v.rp.creaturesHi == p.creaturesHi), "survey: narrowing clips the high bound");
         _mark(
@@ -1186,8 +1160,13 @@ contract GenEffectsVectors is Script {
             !v.precise && v.rp.energyLo > p.energyLo && v.rp.energyHi < p.energyHi,
             "survey: narrowing keeps both bounds inside"
         );
-        _mark(cv, th == 0, "survey: threshold 0");
-        _mark(cv, th == 255, "survey: threshold 255");
+    }
+
+    function _widest(Portal memory p) private pure returns (uint256) {
+        uint256 we = uint256(p.energyHi) - p.energyLo;
+        uint256 ws = uint256(p.stabilityHi) - p.stabilityLo;
+        uint256 wc = uint256(p.creaturesHi) - p.creaturesLo;
+        return we > ws ? (we > wc ? we : wc) : (ws > wc ? ws : wc);
     }
 
     function _tagReveal(Cov memory cv, Vec memory v, Config memory c) private pure {

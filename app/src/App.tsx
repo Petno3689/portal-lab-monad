@@ -1,9 +1,13 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { formatEther, isAddress, type Address } from 'viem';
 import { MONAD_CHAIN_ID, MONAD_RPC_URL } from './config';
-import { readPlayer, readPending, readFee, readCanAct, readBestRun, sendTx, revertOf, type ChainState } from './contract';
+import { publicClient, readPlayer, readPending, readFee, readCanAct, readBestRun, readDeferredOutcome, blockOf, sendTx, revertOf, type ChainState } from './contract';
 import { preview } from '@shared/preview';
-import { Action, getRefusalMessage } from './types';
+import { catchUp } from '@shared/time';
+import { fallsNoLaterThan } from './edgeBound';
+import { Action, getRefusalMessage, getCancelReasonMessage, portalTypeNames } from './types';
+import { Journal } from './Journal';
+import { Leaderboard } from './Leaderboard';
 import type { Pending, BestRun } from '@shared/types';
 import './App.css';
 
@@ -86,6 +90,8 @@ function App() {
   const [loading, setLoading] = useState(false);
   // The deferred action we started, so the result can be reported when it clears.
   const awaited = useRef<Pending | null>(null);
+  // Block of the transaction that committed the deferral: where to start looking for its outcome events.
+  const awaitedBlock = useRef<bigint | null>(null);
   // State as of the moment the deferral was observed, to tell a fresh game's first word from a plain sync.
   const stateRef = useRef<ChainState | null>(null);
   stateRef.current = state;
@@ -140,6 +146,7 @@ function App() {
     setConfirmNew(false);
     setTxStatus({ pending: false, message: '' });
     awaited.current = null;
+    awaitedBlock.current = null;
   };
 
   const switchToMonad = async () => {
@@ -162,7 +169,11 @@ function App() {
     setChain(parseInt(id as string, 16));
   };
 
+  // Bumped wherever the best run is re-read: the leaderboard re-reads at the same moments.
+  const [leaderboardTick, setLeaderboardTick] = useState(0);
+
   const refreshBestRun = useCallback((p: Address) => {
+    setLeaderboardTick((t) => t + 1);
     readBestRun(p).then(setBestRun).catch((error) => console.error('Failed to load best run:', error));
   }, []);
 
@@ -204,12 +215,19 @@ function App() {
       try {
         const p = await readPending(player);
         if (p.active || cancelled()) return;
+        // The outcome events are at or before this block.
+        const seenAt = await publicClient.getBlockNumber();
         const fresh = await readPlayer(player);
         if (cancelled()) return;
         setState(fresh);
         setNow(nowSec());
-        setTxStatus({ pending: false, message: resultMessage(awaited.current, fresh, stateRef.current) });
+        const done = awaited.current;
+        const fromBlock = awaitedBlock.current;
         awaited.current = null;
+        awaitedBlock.current = null;
+        const message = await resultMessage(done, fresh, stateRef.current, player, fromBlock, seenAt);
+        if (cancelled()) return;
+        setTxStatus({ pending: false, message });
       } catch (error) {
         console.error('Pending poll failed:', error);
       }
@@ -236,6 +254,7 @@ function App() {
       if (fn === 'settle' || fn === 'startGame') refreshBestRun(account);
       if (fresh.pending.active) {
         awaited.current = fresh.pending;
+        awaitedBlock.current = await blockOf(hash).catch(() => null);
         setTxStatus({ pending: true, message: `${label}: waiting for the random word from Pyth (tx ${hash.slice(0, 10)}…)` });
       } else {
         setTxStatus({ pending: false, message: doneMessage ?? `${label}: done (tx ${hash.slice(0, 10)}…)` });
@@ -269,6 +288,7 @@ function App() {
     cancelling.current = true;
     cancelEpoch.current += 1;
     awaited.current = null;
+    awaitedBlock.current = null;
     try {
       await send('Cancel request', 'cancelDeferred', [player], 0n, 'Request cancelled');
     } finally {
@@ -277,7 +297,6 @@ function App() {
     }
   };
 
-  const portalTypeNames = ['Flash', 'Long-lived', 'Deaf', 'Resonant', 'Energetic'];
   const game = projected?.game;
   const hasGame = !!game && game.startedAt !== 0n;
   // Seconds until the pending request can be cancelled (contract: block.timestamp > committedAt + timeout).
@@ -286,7 +305,50 @@ function App() {
       ? BigInt(state.pending.committedAt) + state.config.requestTimeoutHours * state.config.secPerHour - now + 1n
       : 0n;
   const openingLab = !!game && !game.finished && game.hoursElapsed === 0n && game.openPortals === 0n;
-  const openingWait = openingLab && game && state ? game.startedAt + state.config.secPerHour - now : 0n;
+
+  // Everything the stored state will do before the next random word, if the player does nothing.
+  const forecast = useMemo(() => {
+    if (!state || !projected || state.game.startedAt === 0n || state.game.finished) return null;
+    const covered = state.pending.coveredEpochs;
+    // No word pinned, or the projection already sits at the edge: nothing to forecast.
+    if (covered === 0n || projected.cappedShort) return null;
+    try {
+      const sph = state.config.secPerHour;
+      const lastHour = covered * state.config.epochHours - 1n;
+      // The last second of the last covered hour: the walk must not cross the pinned edge.
+      const edgeTs = state.game.startedAt + (lastHour + 1n) * sph - 1n;
+      const r = catchUp(
+        state.game, state.portals, state.config, state.types,
+        state.epochWord, state.epochWord, covered, covered,
+        edgeTs,
+      );
+      const spawns = r.spawns
+        .filter((sp) => sp.atHour > projected.game.hoursElapsed)
+        .map((sp) => ({
+          atHour: sp.atHour,
+          inSec: state.game.startedAt + sp.atHour * sph - now,
+          portalType: sp.portalType,
+        }));
+      const fallsAt = r.game.finished && r.game.diedAtHour <= lastHour ? r.game.diedAtHour : null;
+      const boundAfterEdge = fallsAt === null ? fallsNoLaterThan(r.game, r.portals, state.config) : null;
+      return { spawns, edgeHour: lastHour, fallsAt, boundAfterEdge };
+    } catch (error) {
+      console.error('Forecast failed:', error);
+      return null;
+    }
+  }, [state, projected, now]);
+
+  const secondsUntilHour = (hour: bigint): bigint => {
+    const s = (game?.startedAt ?? 0n) + hour * (state?.config.secPerHour ?? 0n) - now;
+    return s > 0n ? s : 0n;
+  };
+  // Latest fall hour while the world is held at the edge of its random word.
+  const pausedBound =
+    state && projected && projected.cappedShort && !projected.game.finished && !state.pending.active
+      ? fallsNoLaterThan(projected.game, projected.portals, state.config)
+      : null;
+  const wallHour =
+    game && state && state.config.secPerHour > 0n ? (now - game.startedAt) / state.config.secPerHour : 0n;
 
   return (
     <div className="app">
@@ -381,18 +443,25 @@ function App() {
             </div>
           </div>
 
-          {openingLab && (openingWait > 0n || state?.pending.active) && (
-            <div className="info-message">
-              {openingWait <= 0n
-                ? 'Opening the lab — waiting for the random word'
-                : `Opening the lab — the first portals arrive in ${String(openingWait)} s`}
-            </div>
+          {openingLab && state?.pending.active && (
+            <div className="info-message">Opening the lab — waiting for the random word</div>
           )}
 
           {projected.cappedShort && !game.finished && !state?.pending.active && (
             <div className="info-message">
               The world is paused at hour {String(game.hoursElapsed)}. It needs a fresh random epoch word;
               any action will fetch one (Pyth fee).
+              {pausedBound !== null &&
+                (wallHour < pausedBound ? (
+                  <p className="forecast-death">
+                    Without a new word the lab falls no later than hour {String(pausedBound)} (in{' '}
+                    {String(secondsUntilHour(pausedBound))} s).
+                  </p>
+                ) : (
+                  <p className="forecast-death">
+                    The lab has fallen by hour {String(pausedBound)} at the latest. Sync (pays for word) to record the run.
+                  </p>
+                ))}
             </div>
           )}
 
@@ -415,19 +484,15 @@ function App() {
           ) : (
           <div className="portals-grid">
             {projected.portals.map((portal, idx) => {
-              const stored = state?.portals[idx];
-              const forming =
-                portal.status !== 0 && !!stored && (stored.status === 0 || stored.id !== portal.id);
               return (
-              <div key={idx} className={`portal ${portal.status === 0 ? 'empty' : 'open'}${forming ? ' forming' : ''}`}>
+              <div key={idx} className={`portal ${portal.status === 0 ? 'empty' : 'open'}`}>
                 <div className="portal-header">
                   <h3>Slot {idx}</h3>
                   {portal.status !== 0 && (
-                    <span className={`type${forming ? ' muted' : ''}`}>
+                    <span className="type">
                       {portalTypeNames[portal.portalType] || 'Unknown'}
                     </span>
                   )}
-                  {forming && <span className="forming-badge">Forming</span>}
                 </div>
 
                 {portal.status === 0 ? (
@@ -441,13 +506,8 @@ function App() {
                       </div>
                       <div className="info-item">
                         <span>Hours to Collapse:</span>
-                        <span>{forming ? '—' : String(portal.hoursToCollapse)}</span>
+                        <span>{String(portal.hoursToCollapse)}</span>
                       </div>
-                      {forming && (
-                        <div className="info-item forming-note">
-                          Forming: it becomes real on the next transaction; its numbers may still change.
-                        </div>
-                      )}
                       {portal.surveyPending && <div className="info-item">Survey: waiting for the word…</div>}
                       {portal.rescuerPending && <div className="info-item">Blind entry: waiting for the word…</div>}
                       {portal.observerInside && <div className="info-item">Observer inside</div>}
@@ -470,6 +530,9 @@ function App() {
                         </>
                       ) : (
                         <>
+                          {portal.narrowedOnce && (
+                            <div className="info-item">Narrowed — one more survey reads exact</div>
+                          )}
                           <div className="info-item">
                             <span>Energy Range:</span>
                             <span>
@@ -511,6 +574,36 @@ function App() {
           </div>
           )}
 
+          {!game.finished && forecast && (
+            <div className="forecast">
+              <h3>Coming before the next random word (if you do nothing)</h3>
+              {forecast.fallsAt !== null && (
+                <p className="forecast-death">If nothing is done, the lab falls at hour {String(forecast.fallsAt)}</p>
+              )}
+              {forecast.spawns.length === 0 ? (
+                <p>No new portals.</p>
+              ) : (
+                <ul>
+                  {forecast.spawns.map((sp, i) => (
+                    <li key={i}>
+                      Hour {String(sp.atHour)} (in {String(sp.inSec > 0n ? sp.inSec : 0n)} s): {portalTypeNames[sp.portalType] ?? 'Unknown'} portal
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {forecast.edgeHour !== null && <p>The current random word covers up to hour {String(forecast.edgeHour)}.</p>}
+              {forecast.boundAfterEdge !== null && (
+                <p className="forecast-death">
+                  Without a new random word after hour {String(forecast.edgeHour)}, the lab falls no later than hour{' '}
+                  {String(forecast.boundAfterEdge)} (in{' '}
+                  {String(secondsUntilHour(forecast.boundAfterEdge))} s).
+                </p>
+              )}
+            </div>
+          )}
+
+          <Journal player={player} state={state} />
+
           <div className="game-controls">
             <button onClick={load}>Refresh</button>
             {projected.cappedShort && !game.finished && !state?.pending.active && (
@@ -546,6 +639,13 @@ function App() {
               <p>
                 This run is still alive. Starting a new game forfeits it WITHOUT recording it on the leaderboard.
               </p>
+              {projected.cappedShort && (
+                <p>
+                  The world is paused at the edge of its random word, so the contract cannot tell yet whether this
+                  lab has already fallen. Use "Sync (pays for word)" first: if the run ended while you were away, it
+                  will be recorded.
+                </p>
+              )}
               <button
                 onClick={async () => {
                   setConfirmNew(false);
@@ -560,17 +660,23 @@ function App() {
           )}
         </div>
       )}
+
+      <Leaderboard account={account} refreshKey={leaderboardTick} />
     </div>
   );
 }
 
-function resultMessage(done: Pending | null, s: ChainState, before: ChainState | null): string {
+async function resultMessage(
+  done: Pending | null,
+  s: ChainState,
+  before: ChainState | null,
+  player: Address,
+  fromBlock: bigint | null,
+  toBlock: bigint,
+): Promise<string> {
   if (!done) return 'Random word received, state updated';
   if (done.syncOnly && before && before.game.hoursElapsed === 0n && before.game.openPortals === 0n && s.game.openPortals > 0n) {
     return `Lab ready: hour ${s.game.hoursElapsed}, ${s.game.openPortals} portals`;
-  }
-  if (done.syncOnly && s.game.hoursElapsed === 0n && s.game.openPortals === 0n) {
-    return 'Random word received — the first portals arrive at hour 1';
   }
   if (done.syncOnly) return `Sync complete: world at hour ${s.game.hoursElapsed}`;
   const slot = Number(done.slot);
@@ -579,11 +685,8 @@ function resultMessage(done: Pending | null, s: ChainState, before: ChainState |
     if (p.surveyed) {
       return `Survey of slot ${slot}: energy ${p.energy}, stability ${p.stability}, creatures ${p.creatures}`;
     }
-    const prev = before?.portals[slot];
-    const samePortal = !!prev && prev.status !== 0 && p.status !== 0 && prev.id === p.id;
-    // Deaf portal type is 2 (PortalType.Deaf)
-    if (samePortal && p.portalType === 2) {
-      return `Survey of slot ${slot} narrowed the ranges — a Deaf portal needs more surveys to read exact`;
+    if (p.id === done.portalId && p.narrowedOnce) {
+      return `Survey of slot ${slot} narrowed the ranges — one more survey reads exact`;
     }
     return `Survey of slot ${slot} cancelled (portal collapsed or game over)`;
   }
@@ -592,7 +695,18 @@ function resultMessage(done: Pending | null, s: ChainState, before: ChainState |
       ? `Blind entry to slot ${slot}: creatures ${p.creatures}${p.rescuerInside ? ', rescuer inside' : ', rescuer left to recover'}`
       : `Blind entry to slot ${slot} cancelled`;
   }
-  return `Action ${Action[done.action]} on slot ${slot} applied after the word arrived`;
+  const label = `Action ${Action[done.action]} on slot ${slot}`;
+  if (fromBlock === null) return 'Random word received, state updated';
+  try {
+    const out = await readDeferredOutcome(player, slot, done.action, fromBlock, toBlock);
+    if (out.cancelledReason !== null) {
+      return `${label} cancelled: ${getCancelReasonMessage(out.cancelledReason)}`;
+    }
+    if (out.performed) return `${label} applied after the word arrived`;
+  } catch (error) {
+    console.error('Outcome log query failed:', error);
+  }
+  return 'Random word received, state updated';
 }
 
 export default App;

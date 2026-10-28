@@ -12,6 +12,7 @@ import {
     PortalType,
     PortalStatus,
     MAX_OPEN_PORTALS,
+    MAX_CATCHUP_EVENTS,
     SPAWN_DEBT_MAX
 } from "../src/PortalLabTypes.sol";
 import {VectorCodec} from "../test/utils/VectorCodec.sol";
@@ -38,9 +39,11 @@ import {TimeHarness} from "../test/utils/TimeHarness.sol";
 ///
 ///   "refusals": rows in the same input shape whose `expected` is only
 ///   `{reverted, error}`. `catchUp` is a public path and is NOT total: called with
-///   a `lastTickAt` ahead of `nowTs` it can underflow. Those rows prove the
-///   mirror falls over in the same place and the same way, instead of inventing
-///   an answer.
+///   a counter at its uint32 ceiling it panics. Those rows prove the mirror falls
+///   over in the same place and the same way, instead of inventing an answer.
+///   (A clock behind `lastTickAt` is NOT a refusal any more: `catchUp` clamps it,
+///   and those rows are ordinary vectors, each asserted equal to the call at
+///   `lastTickAt` at generation time.)
 ///
 /// Coverage: every required case is registered by name (`_register`) and marked by
 /// the vectors that reach it; the run ABORTS if any case is reached by none.
@@ -48,7 +51,7 @@ contract GenSpawnVectors is Script {
     string private constant PATH = "../shared/test/vectors/spawn-vectors.json";
 
     uint256 private constant CAPACITY = 80;
-    uint256 private constant REFUSALS = 8;
+    uint256 private constant REFUSALS = 2;
     uint256 private constant CONFIG_COUNT = 8;
     uint256 private constant SET_COUNT = 3;
     uint256 private constant RANDOM = 24;
@@ -80,9 +83,9 @@ contract GenSpawnVectors is Script {
         // filled by _eval
         Game rg;
         Portal[12] rp;
-        TimeLib.Collapse[12] ev;
+        TimeLib.Collapse[64] ev;
         uint8 evN;
-        TimeLib.Spawn[12] sp;
+        TimeLib.Spawn[64] sp;
         uint8 spN;
         bool cappedShort;
         bool reverted;
@@ -96,16 +99,17 @@ contract GenSpawnVectors is Script {
         uint256 sph;
         uint256 hNow;
         uint256 windowStart;
-        uint256 hWalkEnd;
+        uint256 hEnd; // last hour the walk may reach: hNow, or the pinned edge
         uint256 openStart;
-        uint40 effTs;
-        uint256 needed;
-        uint256 fullRaw;
-        uint256 covered;
-        uint256 hFill;
-        uint256 affordable;
-        uint256 budget;
         uint256 freeAfter;
+        uint256 births;
+        bool tailDeath; // died beyond the pinned edge (the deterministic §5.5 overflow)
+        bool fuse; // the event fuse stopped the walk
+        uint256 fullRaw; // debt0 + pressure over the whole window
+        uint256 covered; // debt0 + pressure over the walked span
+        uint256 debtAtEdge; // what the births left of `covered`
+        uint256 tailNeeded; // pressure that would fill the lab from the edge
+        uint256 tailFill; // the hour it would (max when it would not by hNow)
     }
 
     /// @dev Coverage registry: a fixed list of case names and a hit counter each.
@@ -133,6 +137,7 @@ contract GenSpawnVectors is Script {
         for (uint256 i = 0; i < n; i++) {
             _eval(vs[i], cfgs, tps);
             spawnTotal += vs[i].spN;
+            _requireStaleEqualsTick(vs[i], cfgs, tps);
             _tag(cv, vs[i], cfgs, tps);
         }
         for (uint256 i = 0; i < nr; i++) {
@@ -164,7 +169,7 @@ contract GenSpawnVectors is Script {
 
     /// @dev Eight configs, each built fresh (memory structs are references).
     ///   0 — the deployed GameConfig verbatim: 1000 pressure/h with a ramp of 1,
-    ///       10000 per portal, 3 spawns per tx, overflow 5/h, epochHours 12;
+    ///       10000 per portal, overflow 5/h, epochHours 12;
     ///   1 — 10000 pressure/h flat: exactly one portal's worth per game hour,
     ///       which makes every fill hour in the comments checkable by eye;
     ///   2 — as 1, overflow OFF (the §5.5 death branch is never considered);
@@ -173,7 +178,8 @@ contract GenSpawnVectors is Script {
     ///       old/new word split is easy to place);
     ///   5 — as 1, 1e9 pressure/h (saturates spawnDebt at SPAWN_DEBT_MAX);
     ///   6 — as 1, 100 pressure/h (pressure accrues but buys nothing);
-    ///   7 — as 1, maxSpawnsPerTx 1.
+    ///   7 — as 1, 5000 pressure/h: a portal matures every second hour, so a birth
+    ///       held back by a full lab is visibly later than its maturity.
     function _configs() private pure returns (Config[] memory cfgs) {
         cfgs = new Config[](CONFIG_COUNT);
         cfgs[0] = GameConfig.config();
@@ -195,7 +201,7 @@ contract GenSpawnVectors is Script {
 
         cfgs[6].basePressurePerHour = 100;
 
-        cfgs[7].maxSpawnsPerTx = 1;
+        cfgs[7].basePressurePerHour = 5000;
     }
 
     /// @dev Three sets of five `PortalTypeParams`, written flat (set `k` occupies
@@ -315,112 +321,149 @@ contract GenSpawnVectors is Script {
         n = _dSpawns(vs, n);
         n = _dEpoch(vs, n);
         n = _dHunted(vs, n, cfgs, tps);
+        n = _dStale(vs, n);
         return n;
     }
 
-    // Group A — the deterministic long-absence overflow death (SPEC §5.5).
-    //
-    // Config 1 makes every number here readable: pressure is 10000 per game hour
-    // and a portal costs 10000, so an empty lab (needed = 12 * 10000) fills at
-    // game hour 12 and `hToDeath` is ceil(hp / 5).
+    // Group A — deaths. Config 1 makes every number readable: pressure is 10000
+    // per game hour and a portal costs 10000, so the k-th birth of an empty lab
+    // matures at hour k and the lab is full at hour 12. Type set 1 (every type
+    // lives exactly twenty hours) keeps the newborns from collapsing before hour
+    // 21 where a vector wants only the overflow.
     function _dDeath(Vec[] memory vs, uint256 n) private pure returns (uint256) {
-        // hFill 12, hToDeath 1, death at hour 13, inside the window (hNow 20).
+        // Births fill the lab at hour 12; overflow 5/h kills 5 hp at hour 13,
+        // inside the window (hNow 20). No separate branch: it is the walk itself.
         Game memory g = _g();
         g.hp = 5;
-        n = _add(vs, n, "death: an empty lab fills and the overflow kills inside the window", g, 1, 0, 1, 2, _tsOf(20, SPH));
+        n = _add(vs, n, "death: births fill the lab and the overflow kills inside the window", g, 1, 1, 1, 2, _tsOf(20, SPH));
 
-        // The debt ALONE already meets `needed`, so the fill hour is windowStart
-        // itself — and windowStart is 4, not 0, so a mirror that confuses the two
-        // is caught. Spawn hour 4 sits in epoch 0, pinned by the OLD word.
+        // Nothing pinned (maxCovered 0): the world cannot be walked, yet the debt
+        // ALONE already fills the lab, so the overflow beyond the edge starts at
+        // the edge itself — windowStart 4, not 0, so a mirror that confuses the two
+        // is caught.
         g = _g();
         g.hp = 5;
         g.spawnDebt = 120_000;
         g.lastTickAt = _tsOf(4, SPH);
         g.hoursElapsed = 4;
-        n = _add(vs, n, "death: the debt alone fills the lab, so hFill is windowStart", g, 1, 0, 1, 2, _tsOf(10, SPH));
+        n = _add(vs, n, "death: beyond the edge, the debt alone fills the lab at the edge", g, 1, 0, 1, 0, _tsOf(10, SPH));
 
-        // dh == hNow exactly: the bound is not strict, so this still dies.
+        // Beyond the edge with nothing pinned: the lab would fill at hour 12 and
+        // die at 13 == hNow exactly. The bound is not strict, so this still dies.
         g = _g();
         g.hp = 5;
-        n = _add(vs, n, "death: the hour of death lands exactly on hNow", g, 1, 0, 1, 2, _tsOf(13, SPH));
+        n = _add(vs, n, "death: beyond the edge, the hour of death lands exactly on hNow", g, 1, 0, 1, 0, _tsOf(13, SPH));
 
-        // THE case of the ticket: the FULL window reaches `needed` where the
-        // covered span does not. maxCoveredEpochs 1 puts the pinned edge at hour
-        // 11; pressure to hour 11 is 110000 < 120000, pressure to hour 30 is
-        // 300000. The §5.5 death needs no word, so the edge does not hold it back.
+        // The walk stops at the pinned edge (hour 11) with eleven newborns; the
+        // twelfth would mature at hour 12, past the edge. The overflow beyond the
+        // edge needs no word, so the edge does not hold the death back (hour 13).
         g = _g();
         g.hp = 5;
-        n = _add(vs, n, "death: the full window reaches needed where the covered span does not", g, 1, 0, 1, 1, _tsOf(30, SPH));
+        n = _add(vs, n, "death: the walk stops at the edge and the overflow beyond it kills", g, 1, 1, 1, 1, _tsOf(30, SPH));
 
-        // Twelve portals open: `needed` is zero and the pressure is ample, yet the
-        // branch is not considered at all — only the occupancy test stops it.
+        // Twelve already open, hNow inside the pinned span: the overflow drains in
+        // the walk itself and 100 hp outlast two hours.
         g = _g();
         g.hp = 100;
-        n = _add(vs, n, "death: not considered, twelve portals are already open", g, 1, 0, 1, 1, _tsOf(2, SPH));
+        n = _add(vs, n, "death: twelve open, the overflow drains inside the window", g, 1, 0, 1, 1, _tsOf(2, SPH));
         _fill(vs, n, 12);
 
-        // Overflow off: a full lab costs nothing, so there is nothing to die of.
-        n = _add(vs, n, "death: not considered, hpOverflowPerHour is zero", _g(), 2, 0, 1, 2, _tsOf(20, SPH));
+        // Twelve already open and the clock far past the edge (hour 35): the rule
+        // beyond the edge fills a lab, it does not drain a full one, so it is not
+        // considered and the run survives at the edge. The world stands at hour 30
+        // (not 0): from hour 0 the 35 hours to the edge would drain 175 hp and kill
+        // the run INSIDE the window, which is a different case. Five hours of drain
+        // leave hp 100 - 5 * 5 = 75.
+        g = _g();
+        g.hp = 100;
+        g.lastTickAt = _tsOf(30, SPH);
+        g.hoursElapsed = 30;
+        n = _add(vs, n, "death: not considered beyond the edge, twelve are open there", g, 1, 0, 1, 1, _tsOf(60, SPH));
+        _fill(vs, n, 12);
 
-        // A portal that costs nothing makes `needed` zero, so the condition holds
-        // for ANY pressure, the fill hour is windowStart and the lab dies — while
-        // `_spawn` returns at once and creates nothing.
+        // Overflow off, the clock past the edge: a full lab costs nothing, so there
+        // is nothing to die of beyond it.
+        // (hNow 60, not 20: the edge is hour 35 now, so 20 is still inside the window;
+        // the world stands at hour 30 so the walk to the edge is short and the run
+        // is not killed by collapses inside the window.)
+        g = _g();
+        g.lastTickAt = _tsOf(30, SPH);
+        g.hoursElapsed = 30;
+        n = _add(vs, n, "death: not considered, hpOverflowPerHour is zero", g, 2, 1, 1, 1, _tsOf(60, SPH));
+
+        // A portal that costs nothing: no birth is ever made (it would be endless),
+        // and beyond the edge `needed` is zero, so the abandoned lab dies.
         g = _g();
         g.hp = 10;
-        n = _add(vs, n, "death: spawnCostUnits zero makes needed zero, and nothing spawns", g, 3, 0, 1, 1, _tsOf(10, SPH));
+        n = _add(vs, n, "death: spawnCostUnits zero makes needed zero, and nothing spawns", g, 3, 0, 1, 0, _tsOf(10, SPH));
 
-        // Pressure of 1e9 per hour: the debt saturates at SPAWN_DEBT_MAX on the
-        // way into the death branch.
+        // Pressure of 1e9 per hour: twelve births at hour 1, death at hour 2, and
+        // the debt left at death saturates at SPAWN_DEBT_MAX.
         g = _g();
         g.hp = 5;
-        n = _add(vs, n, "death: the debt saturates at SPAWN_DEBT_MAX", g, 5, 0, 1, 1, _tsOf(5, SPH));
+        n = _add(vs, n, "death: the debt saturates at SPAWN_DEBT_MAX", g, 5, 1, 1, 1, _tsOf(5, SPH));
+
+        // One portal's worth of debt and almost no pressure (config 6): one birth
+        // at hour 0, which lives twenty hours and collapses with its creatures,
+        // costing more than 25 hp. The run dies at hour 20, killed by a portal born
+        // inside the same window.
+        g = _g();
+        g.hp = 25;
+        g.spawnDebt = 10_000;
+        n = _add(vs, n, "death: a portal born in the window collapses and kills", g, 6, 1, 1, 3, _tsOf(30, SPH));
         return n;
     }
 
     // Group B — the survival branch: what the debt does when nobody dies.
     function _dSurvive(Vec[] memory vs, uint256 n) private pure returns (uint256) {
-        // The lab fills at hour 12 but 100 hp buys 20 more hours, so death (hour
-        // 32) is past hNow (20): the run survives and spawns from the debt.
-        n = _add(vs, n, "survive: the lab fills but the death falls past the window", _g(), 1, 0, 1, 2, _tsOf(20, SPH));
+        // The lab fills at hour 12 and 100 hp buy 20 more hours, so the run is
+        // alive at hNow (20) with 60 hp.
+        n = _add(vs, n, "survive: the lab fills but the death falls past the window", _g(), 1, 1, 1, 2, _tsOf(20, SPH));
 
-        // The fill hour is hNow itself (debt 110000 plus one hour of pressure
-        // meets 120000 exactly at hour 1), so the death is necessarily ahead.
+        // Debt 110000: eleven births at hour 0, the twelfth matures at hour 1 ==
+        // hNow.
         Game memory g = _g();
         g.spawnDebt = 110_000;
-        n = _add(vs, n, "survive: the lab fills only at hNow, the death is still ahead", g, 1, 0, 1, 1, _tsOf(1, SPH));
+        n = _add(vs, n, "survive: the lab fills only at hNow", g, 1, 1, 1, 1, _tsOf(1, SPH));
 
         // 100 units an hour for ten hours: the debt grows and still buys nothing.
         n = _add(vs, n, "survive: the debt accrues, no portal affordable yet", _g(), 6, 0, 1, 1, _tsOf(10, SPH));
 
-        // 1e9 an hour for five hours: the debt saturates at SPAWN_DEBT_MAX in the
-        // survival branch, then pays for the per-transaction maximum.
-        n = _add(vs, n, "survive: the debt saturates at SPAWN_DEBT_MAX", _g(), 5, 0, 1, 1, _tsOf(5, SPH));
+        // 1e9 an hour for five hours: twelve births at hour 1, then the debt
+        // saturates at SPAWN_DEBT_MAX; 100 hp outlast four overflow hours.
+        n = _add(vs, n, "survive: the debt saturates at SPAWN_DEBT_MAX", _g(), 5, 1, 1, 1, _tsOf(5, SPH));
 
         // Capped short: hNow is 30, the pinned edge is hour 11. Only the covered
         // span accrues (1100), never the full window's 3000 — the tail waits for
         // a word.
         n = _add(vs, n, "survive: the debt accrues over the covered span only", _g(), 6, 0, 1, 1, _tsOf(30, SPH));
+
+        // Capped short at hour 11 with eleven newborns: beyond the edge the lab
+        // would fill at hour 12, but 100 hp hold until hour 32 > hNow (20).
+        n = _add(vs, n, "survive: the lab would fill beyond the edge, the death is past hNow", _g(), 1, 1, 1, 1, _tsOf(20, SPH));
         return n;
     }
 
-    // Group C — how many portals appear, and where.
+    // Group C — how many portals appear, and when.
     function _dSpawns(Vec[] memory vs, uint256 n) private pure returns (uint256) {
-        // maxSpawnsPerTx 1: two hours of pressure could buy two, the cap allows one.
-        n = _add(vs, n, "spawn: exactly one portal, the per-transaction cap is one", _g(), 7, 0, 1, 1, _tsOf(2, SPH));
+        // One hour of pressure buys exactly one portal, born at hour 1.
+        n = _add(vs, n, "spawn: exactly one portal", _g(), 1, 0, 1, 1, _tsOf(1, SPH));
 
-        // Debt 100000 plus one hour: eleven portals affordable, three allowed,
-        // twelve slots free. The cap binds, not the purse and not the room.
-        Game memory g = _g();
-        g.spawnDebt = 100_000;
-        n = _add(vs, n, "spawn: the per-transaction cap of three binds", g, 1, 0, 1, 1, _tsOf(1, SPH));
+        // A full lab holds back a matured birth: config 7 matures a portal at hour
+        // 2, but all twelve slots are taken until slot 0 collapses at hour 5 — the
+        // birth happens then, at the collapse, not at maturity and not at the call.
+        n = _add(vs, n, "spawn: a matured birth waits for a full lab to free a slot", _g(), 7, 0, 1, 1, _tsOf(7, SPH));
+        _fill(vs, n, 12);
+        vs[n - 1].p[0] = _open(5);
 
-        // Eleven slots taken: the budget is two, the room is one.
-        n = _add(vs, n, "spawn: fewer free slots than the budget allows", _g(), 1, 0, 1, 1, _tsOf(2, SPH));
+        // Eleven slots taken: hour 1 fills the twelfth, the birth maturing at
+        // hour 2 finds no room and its pressure stays in the debt.
+        n = _add(vs, n, "spawn: fewer free slots than the pressure would buy", _g(), 1, 0, 1, 1, _tsOf(2, SPH));
         _fill(vs, n, 11);
 
-        // A collapse at hour 1 frees slot 0, and the pressure refills it in the
-        // same call — proof the spawn loop sees the freed slot, not a stale one.
-        n = _add(vs, n, "spawn: a collapse frees a slot and the pressure refills it at once", _g(), 1, 0, 1, 1, _tsOf(2, SPH));
+        // A collapse at hour 1 frees slot 0, and the birth maturing at the same
+        // hour takes it — collapses first at an equal hour.
+        n = _add(vs, n, "spawn: a collapse frees a slot and the birth of the same hour takes it", _g(), 1, 0, 1, 1, _tsOf(2, SPH));
         vs[n - 1].p[0] = _open(1);
 
         // Every type lives exactly twenty hours: span one, and the hours draw
@@ -432,11 +475,31 @@ contract GenSpawnVectors is Script {
         n = _add(vs, n, "spawn: a life span spanning the whole uint16 range", _g(), 1, 2, 1, 1, _tsOf(2, SPH));
 
         // The canonical config: a ramped pressure (1000 + 1 per lived hour) over a
-        // long absence, ending in the overflow death. Nothing contrived — this is
-        // the shape a real abandoned lab has.
-        g = _g();
+        // long absence, ending in death. Nothing contrived — this is the shape a
+        // real abandoned lab has.
+        Game memory g = _g();
         g.hp = 20;
         n = _add(vs, n, "spawn: the deployed config over a long absence", g, 0, 0, 1, 30, _tsOf(200, SPH));
+
+        // One portal's worth of debt, almost no pressure: born at hour 0, collapses
+        // at hour 20 inside the window, and 100 hp survive it.
+        g = _g();
+        g.spawnDebt = 10_000;
+        n = _add(vs, n, "spawn: a portal born in the window collapses in the window", g, 6, 1, 1, 3, _tsOf(30, SPH));
+
+        // The starting hand: three portals' worth of debt, called at the very hour
+        // the game began — all three are born at hour 0.
+        g = _g();
+        g.spawnDebt = 30_000;
+        n = _add(vs, n, "spawn: the starting hand, born at the window start", g, 0, 0, 1, 1, _tsOf(0, SPH));
+
+        // The event fuse: 1e9 pressure an hour fills the lab at hour 1, every
+        // newborn collapses twenty hours later and is replaced at once. Sixty-four
+        // events are spent by hour 61; the walk stops there and reports it like the
+        // pinned edge. 60000 hp keep the run alive throughout.
+        g = _g();
+        g.hp = 60_000;
+        n = _add(vs, n, "fuse: sixty-four events stop the walk at the last one", g, 5, 1, 1, 100, _tsOf(400, SPH));
         return n;
     }
 
@@ -466,18 +529,19 @@ contract GenSpawnVectors is Script {
         return n;
     }
 
-    /// @dev The one-spawn probe world: config 7 (cap of one), the canonical types,
-    /// an empty lab, two lived hours, nothing pinned (`stored` 0) so the NEW word
-    /// is the one that pins epoch 0 and the hunt has something to vary.
+    /// @dev The one-spawn probe world: config 1 (one portal's worth an hour), the
+    /// canonical types, an empty lab, ONE lived hour so exactly one portal is born,
+    /// nothing pinned (`stored` 0) so the NEW word is the one that pins epoch 0 and
+    /// the hunt has something to vary.
     function _probeName(Config[] memory cfgs, PortalTypeParams[] memory tps, uint256 word)
         private
         pure
-        returns (uint8 spN, uint16 nameIndex)
+        returns (uint8 spN, uint8 nameIndex)
     {
         Game memory g = _g();
         Portal[12] memory p;
-        TimeLib.Spawn[12] memory sp;
-        (,,,, sp, spN,) = TimeLib.catchUp(g, p, cfgs[7], _set(tps, 0), OLD_WORD, word, 0, 1, _tsOf(2, SPH));
+        TimeLib.Spawn[64] memory sp;
+        (,,,, sp, spN,) = TimeLib.catchUp(g, p, cfgs[1], _set(tps, 0), OLD_WORD, word, 0, 1, _tsOf(1, SPH));
         nameIndex = spN > 0 ? sp[0].nameIndex : 0;
     }
 
@@ -495,7 +559,7 @@ contract GenSpawnVectors is Script {
         bool found;
         for (uint256 k = 0; k < 600 && !found; k++) {
             uint256 cand = uint256(keccak256(abi.encode("portal-lab-spawn-name", target, k)));
-            (uint8 spN, uint16 nameIndex) = _probeName(cfgs, tps, cand);
+            (uint8 spN, uint8 nameIndex) = _probeName(cfgs, tps, cand);
             if (spN == 1 && nameIndex == target) {
                 word = cand;
                 found = true;
@@ -507,11 +571,11 @@ contract GenSpawnVectors is Script {
             n,
             string.concat("spawn: a word whose draw lands on nameIndex ", vm.toString(uint256(target))),
             _g(),
-            7,
+            1,
             0,
             0,
             1,
-            _tsOf(2, SPH)
+            _tsOf(1, SPH)
         );
         vs[n - 1].newWord = word;
         return n;
@@ -526,7 +590,7 @@ contract GenSpawnVectors is Script {
     {
         Game memory g = _g();
         Portal[12] memory p;
-        (, Portal[12] memory rp,,, TimeLib.Spawn[12] memory sp, uint8 spN,) =
+        (, Portal[12] memory rp,,, TimeLib.Spawn[64] memory sp, uint8 spN,) =
             TimeLib.catchUp(g, p, cfgs[1], _set(tps, 0), OLD_WORD, word, 0, 1, _tsOf(2, SPH));
         if (spN < 2) return false;
         return sp[0].portalType != sp[1].portalType && sp[0].nameIndex != sp[1].nameIndex
@@ -556,26 +620,16 @@ contract GenSpawnVectors is Script {
         return n;
     }
 
-    // ── refusal vectors ─────────────────────────────────────────────────────
-
-    /// @dev `catchUp` is not total. Every row here is a reachable input on which
-    /// the contract PANICS, recorded so both replayers can prove they fall over in
-    /// the same place and the same way.
-    ///
-    /// The first three walk the same road: `nowTs` BEHIND `lastTickAt` (a stale
-    /// snapshot — a caller holding an old timestamp, never the live chain) makes
-    /// `hNow < windowStart`, and if the standing debt alone already meets `needed`
-    /// the fill-hour search computes `hNow - windowStart` and underflows. The last
-    /// two are the per-spawn counters at their uint32 ceiling: the next spawn
-    /// increments `rngNonce`, then `spawnCount`, and a `uint32` at its maximum
-    /// cannot take the increment.
-    function _refusals(Vec[] memory rf, uint256 n) private pure returns (uint256) {
+    // Group F — a stale clock (`nowTs` behind `lastTickAt`). catchUp clamps the
+    // clock, so these are ordinary vectors; `_requireStaleEqualsTick` proves at
+    // generation time that each equals the same call at `lastTickAt`.
+    function _dStale(Vec[] memory vs, uint256 n) private pure returns (uint256) {
         // Empty lab, needed 120000, debt 150000, the clock five hours behind.
         Game memory g = _g();
         g.spawnDebt = 150_000;
         g.lastTickAt = _tsOf(10, SPH);
         g.hoursElapsed = 10;
-        n = _add(rf, n, "refusal: a stale clock underflows the fill-hour search", g, 1, 0, 1, 2, _tsOf(5, SPH));
+        n = _add(vs, n, "stale clock: five hours behind, debt above needed", g, 1, 0, 1, 2, _tsOf(5, SPH));
 
         // Half the lab occupied (needed 60000) and the debt exactly meeting it:
         // the condition is reached by equality, not by a wide margin.
@@ -583,18 +637,30 @@ contract GenSpawnVectors is Script {
         g.spawnDebt = 60_000;
         g.lastTickAt = _tsOf(20, SPH);
         g.hoursElapsed = 20;
-        n = _add(rf, n, "refusal: a stale clock, the debt meeting needed exactly", g, 1, 0, 1, 2, _tsOf(3, SPH));
-        _fill(rf, n, 6);
+        n = _add(vs, n, "stale clock: the debt meeting needed exactly", g, 1, 0, 1, 2, _tsOf(3, SPH));
+        _fill(vs, n, 6);
 
-        // The same underflow one second before the window start, under config 4
+        // The same staleness one second before the window start, under config 4
         // (one second per game hour), where a single second of staleness is a
         // whole game hour.
         g = _g();
         g.spawnDebt = 120_000;
         g.lastTickAt = _tsOf(9, 1);
         g.hoursElapsed = 9;
-        n = _add(rf, n, "refusal: a stale clock by a single game hour", g, 4, 0, 1, 20, _tsOf(8, 1));
+        n = _add(vs, n, "stale clock: behind by a single game hour", g, 4, 0, 1, 20, _tsOf(8, 1));
 
+        return n;
+    }
+
+    // ── refusal vectors ─────────────────────────────────────────────────────
+
+    /// @dev `catchUp` is not total. Every row here is a reachable input on which
+    /// the contract PANICS, recorded so both replayers can prove they fall over in
+    /// the same place and the same way: the per-spawn counters at their uint32
+    /// ceiling. The next spawn increments `rngNonce`, then `spawnCount`, and a
+    /// `uint32` at its maximum cannot take the increment.
+    function _refusals(Vec[] memory rf, uint256 n) private pure returns (uint256) {
+        Game memory g;
         // rngNonce at the ceiling: the spawn's first act is to bump it.
         g = _g();
         g.rngNonce = U32_MAX;
@@ -650,7 +716,7 @@ contract GenSpawnVectors is Script {
                 Portal memory p;
                 p.id = uint16(1 + (y >> 4) % 500);
                 p.portalType = PortalType((y >> 8) % 5);
-                p.nameIndex = uint16((y >> 12) % 24);
+                p.nameIndex = uint8((y >> 12) % 24);
                 p.status = (y >> 16) % 4 == 0 ? PortalStatus.Questioned : PortalStatus.Open;
                 p.surveyed = (y >> 20) % 3 != 0;
                 p.creaturesKnown = p.surveyed ? (y >> 24) % 8 != 0 : (y >> 24) % 3 == 0;
@@ -689,9 +755,9 @@ contract GenSpawnVectors is Script {
         (
             Game memory rg,
             Portal[12] memory rp,
-            TimeLib.Collapse[12] memory ev,
+            TimeLib.Collapse[64] memory ev,
             uint8 evN,
-            TimeLib.Spawn[12] memory sp,
+            TimeLib.Spawn[64] memory sp,
             uint8 spN,
             bool capped
         ) = TimeLib.catchUp(
@@ -726,6 +792,36 @@ contract GenSpawnVectors is Script {
         }
     }
 
+    /// @dev A stale clock must give exactly the result of the call at `lastTickAt`.
+    function _requireStaleEqualsTick(Vec memory v, Config[] memory cfgs, PortalTypeParams[] memory tps)
+        private
+        pure
+    {
+        if (v.nowTs >= v.g.lastTickAt) return;
+        bytes memory a = _run(v, cfgs, tps, v.nowTs);
+        bytes memory b = _run(v, cfgs, tps, v.g.lastTickAt);
+        require(keccak256(a) == keccak256(b), string.concat("stale clock differs from lastTickAt: ", v.label));
+    }
+
+    function _run(Vec memory v, Config[] memory cfgs, PortalTypeParams[] memory tps, uint40 ts)
+        private
+        pure
+        returns (bytes memory)
+    {
+        Game memory gIn = abi.decode(abi.encode(v.g), (Game));
+        Portal[12] memory pIn = abi.decode(abi.encode(v.p), (Portal[12]));
+        (
+            Game memory rg,
+            Portal[12] memory rp,
+            TimeLib.Collapse[64] memory ev,
+            uint8 evN,
+            TimeLib.Spawn[64] memory sp,
+            uint8 spN,
+            bool capped
+        ) = TimeLib.catchUp(gIn, pIn, cfgs[v.cfg], _set(tps, v.ts), v.oldWord, v.newWord, v.stored, v.maxCov, ts);
+        return abi.encode(rg, rp, ev, evN, sp, spN, capped);
+    }
+
     // ── coverage ────────────────────────────────────────────────────────────
 
     function _reg(Cov memory cv, string memory name) private pure {
@@ -739,24 +835,28 @@ contract GenSpawnVectors is Script {
         cv.names = new string[](48);
         cv.counts = new uint256[](48);
 
-        _reg(cv, "death: the pressure fills the lab and the death lands inside the window");
-        _reg(cv, "death: the lab fills but the death falls past the window, the run survives");
-        _reg(cv, "death: not considered, openStart == 12");
-        _reg(cv, "death: not considered, hpOverflowPerHour == 0");
-        _reg(cv, "death: spawnCostUnits == 0 makes needed zero, the branch fires, nothing spawns");
-        _reg(cv, "death: hFill lands exactly on windowStart");
-        _reg(cv, "death: hFill lands exactly on hNow");
-        _reg(cv, "death: the hour of death equals hNow (the bound is not strict)");
-        _reg(cv, "death: the full window reaches needed where the covered span does not");
+        _reg(cv, "death: births fill the lab and the overflow kills inside the window");
+        _reg(cv, "death: a portal born in the window collapses and kills");
+        _reg(cv, "death: beyond the edge, the abandoned lab overflows; no portal is born there");
+        _reg(cv, "death: beyond the edge, hFill lands exactly on the edge");
+        _reg(cv, "death: beyond the edge, the hour of death equals hNow (the bound is not strict)");
+        _reg(cv, "death: not considered beyond the edge, twelve are open there");
+        _reg(cv, "death: not considered beyond the edge, hpOverflowPerHour == 0");
+        _reg(cv, "death: spawnCostUnits == 0 makes needed zero, the run dies, nothing spawns");
         _reg(cv, "death: spawnDebt saturates at SPAWN_DEBT_MAX");
 
         _reg(cv, "survive: the debt accrues, no portal affordable yet");
         _reg(cv, "survive: spawnDebt saturates at SPAWN_DEBT_MAX");
         _reg(cv, "survive: the debt accrues over the covered span only, the tail is left");
+        _reg(cv, "survive: the lab would fill beyond the edge, but the death falls past hNow");
 
         _reg(cv, "spawn: exactly one portal created");
-        _reg(cv, "spawn: maxSpawnsPerTx created, the per-transaction cap binds");
-        _reg(cv, "spawn: fewer free slots than the budget allows");
+        _reg(cv, "spawn: births at different hours in one window");
+        _reg(cv, "spawn: a birth lands at its maturity, before the end of the window");
+        _reg(cv, "spawn: a matured birth waits for a full lab to free a slot");
+        _reg(cv, "spawn: a portal born in the window collapses in the window");
+        _reg(cv, "spawn: the debt alone births at the window start");
+        _reg(cv, "spawn: fewer free slots than the pressure would buy");
         _reg(cv, "spawn: no free slot at all, nothing created");
         _reg(cv, "spawn: two in one call differ in type, hours and name");
         _reg(cv, "spawn: the hour's epoch is pinned by the old word");
@@ -765,10 +865,12 @@ contract GenSpawnVectors is Script {
         _reg(cv, "spawn: hoursMin == hoursMax, the span is one");
         _reg(cv, "spawn: nameIndex 0");
         _reg(cv, "spawn: nameIndex 23");
-        _reg(cv, "spawn: created in the death branch");
-        _reg(cv, "spawn: created in the survival branch");
+        _reg(cv, "spawn: created in a run that died");
+        _reg(cv, "spawn: created in a run that survived");
 
-        _reg(cv, "refusal: a stale clock underflows the fill-hour search");
+        _reg(cv, "fuse: the event cap stops the walk, reported as cappedShort");
+
+        _reg(cv, "stale clock: equals the call at lastTickAt");
         _reg(cv, "refusal: rngNonce at the uint32 ceiling");
         _reg(cv, "refusal: spawnCount at the uint32 ceiling");
     }
@@ -791,53 +893,58 @@ contract GenSpawnVectors is Script {
         }
     }
 
-    /// @dev The fill hour, recomputed for the coverage names ONLY (so a case can
-    /// say "hFill lands on windowStart" rather than describe a timestamp). Same
-    /// binary search as the library; nothing recorded in the file depends on it.
-    function _fillHourTag(uint256 windowStart, uint256 hNow, uint256 debt0, uint256 needed, Config memory c)
+    /// @dev Smallest hour in `[lo, hi]` where `have + spawnPressure(from, h)`
+    /// reaches `target`, by plain binary search, recomputed for the coverage
+    /// names ONLY (so a case can say "hFill lands on the edge" rather than describe
+    /// a timestamp). Nothing recorded in the file depends on it.
+    function _firstHourTag(uint256 from, uint256 lo, uint256 hi, uint256 have, uint256 target, Config memory c)
         private
         pure
         returns (uint256)
     {
-        uint256 lo = 0;
-        uint256 hi = hNow - windowStart;
         for (uint256 it = 0; it < 64 && lo < hi; it++) {
             uint256 mid = (lo + hi) / 2;
-            if (debt0 + TimeLib.spawnPressure(windowStart, windowStart + mid, c) >= needed) {
+            if (have + TimeLib.spawnPressure(from, mid, c) >= target) {
                 hi = mid;
             } else {
                 lo = mid + 1;
             }
         }
-        return windowStart + lo;
+        return lo;
     }
 
     function _derive(Vec memory v, Config memory c) private pure returns (Derived memory d) {
         d.sph = c.secPerHour;
-        d.hNow = (uint256(v.nowTs) - uint256(v.g.startedAt)) / d.sph;
+        uint256 nowEff = v.nowTs < v.g.lastTickAt ? v.g.lastTickAt : v.nowTs; // catchUp clamps a stale clock
+        d.hNow = (uint256(nowEff) - uint256(v.g.startedAt)) / d.sph;
         d.windowStart = (uint256(v.g.lastTickAt) - uint256(v.g.startedAt)) / d.sph;
-        if (v.maxCov == 0) {
-            d.hWalkEnd = d.windowStart;
-        } else {
-            uint256 maxAdvanceHour = uint256(v.maxCov) * uint256(c.epochHours) - 1;
-            d.hWalkEnd = d.hNow < maxAdvanceHour ? d.hNow : maxAdvanceHour;
-            if (d.hWalkEnd < d.windowStart) d.hWalkEnd = d.windowStart;
-        }
+        uint256 edge = v.maxCov == 0 ? d.windowStart : uint256(v.maxCov) * uint256(c.epochHours) - 1;
+        if (edge < d.windowStart) edge = d.windowStart;
+        d.hEnd = d.hNow < edge ? d.hNow : edge;
         for (uint256 i = 0; i < 12; i++) {
             if (v.p[i].status != PortalStatus.Empty) d.openStart += 1;
             if (v.rp[i].status == PortalStatus.Empty) d.freeAfter += 1;
         }
-        d.effTs = v.cappedShort ? uint40(uint256(v.g.startedAt) + d.hWalkEnd * d.sph) : v.nowTs;
-        d.needed = (MAX_OPEN_PORTALS - d.openStart) * uint256(c.spawnCostUnits);
+        d.births = v.spN;
+        d.tailDeath = v.rg.finished && uint256(v.rg.diedAtHour) > d.hEnd;
+        d.fuse = !v.rg.finished && v.cappedShort && uint256(v.evN) + uint256(v.spN) == MAX_CATCHUP_EVENTS;
         d.fullRaw = uint256(v.g.spawnDebt) + TimeLib.spawnPressure(d.windowStart, d.hNow, c);
-        d.covered = uint256(v.g.spawnDebt) + TimeLib.spawnPressure(d.windowStart, d.hWalkEnd, c);
-        d.hFill = _fillHourTag(d.windowStart, d.hNow, uint256(v.g.spawnDebt), d.needed, c);
-        // What `_spawn` had to spend: the death branch hands it the FULL window's
-        // pressure, the survival branch only the covered span. Both saturate.
-        uint256 debtAtSpawn = v.rg.finished ? d.fullRaw : d.covered;
-        if (debtAtSpawn > SPAWN_DEBT_MAX) debtAtSpawn = SPAWN_DEBT_MAX;
-        d.affordable = c.spawnCostUnits == 0 ? 0 : debtAtSpawn / uint256(c.spawnCostUnits);
-        d.budget = d.affordable < uint256(c.maxSpawnsPerTx) ? d.affordable : uint256(c.maxSpawnsPerTx);
+        d.covered = uint256(v.g.spawnDebt) + TimeLib.spawnPressure(d.windowStart, d.hEnd, c);
+        // The state the walk handed to the overflow beyond the edge: the debt left
+        // at the edge and the portals open there (a tail death freezes the world at
+        // the edge, so `rp` IS that state).
+        uint256 spent = d.births * uint256(c.spawnCostUnits);
+        d.debtAtEdge = d.covered > spent ? d.covered - spent : 0;
+        uint256 openAtEdge = 12 - d.freeAfter;
+        d.tailNeeded = (MAX_OPEN_PORTALS - openAtEdge) * uint256(c.spawnCostUnits);
+        d.tailFill = d.debtAtEdge + TimeLib.spawnPressure(d.hEnd, d.hNow, c) >= d.tailNeeded
+            ? _firstHourTag(d.hEnd, d.hEnd, d.hNow, d.debtAtEdge, d.tailNeeded, c)
+            : type(uint256).max;
+    }
+
+    /// @dev Pressure available at hour `h` of the window: `debt0 + P(windowStart, h)`.
+    function _avail(Vec memory v, Derived memory d, Config memory c, uint256 h) private pure returns (uint256) {
+        return uint256(v.g.spawnDebt) + TimeLib.spawnPressure(d.windowStart, h, c);
     }
 
     /// @dev True when swapping the two words changes what was drawn — the proof
@@ -850,7 +957,7 @@ contract GenSpawnVectors is Script {
         if (v.spN == 0 || v.oldWord == v.newWord) return false;
         Game memory gIn = abi.decode(abi.encode(v.g), (Game));
         Portal[12] memory pIn = abi.decode(abi.encode(v.p), (Portal[12]));
-        (, Portal[12] memory rp2,,, TimeLib.Spawn[12] memory sp2, uint8 n2,) = TimeLib.catchUp(
+        (, Portal[12] memory rp2,,, TimeLib.Spawn[64] memory sp2, uint8 n2,) = TimeLib.catchUp(
             gIn, pIn, cfgs[v.cfg], _set(tps, v.ts), v.newWord, v.oldWord, v.stored, v.maxCov, v.nowTs
         );
         if (n2 != v.spN) return true;
@@ -861,44 +968,54 @@ contract GenSpawnVectors is Script {
 
     function _tag(Cov memory cv, Vec memory v, Config[] memory cfgs, PortalTypeParams[] memory tps) private pure {
         Config memory c = cfgs[v.cfg];
-        if (v.g.startedAt == 0 || v.g.finished || v.nowTs < v.g.startedAt) return; // step 5 is never reached
+        if (v.g.startedAt == 0 || v.g.finished || v.nowTs < v.g.startedAt) return; // nothing is walked
+        _mark(cv, v.nowTs < v.g.lastTickAt, "stale clock: equals the call at lastTickAt");
         Derived memory d = _derive(v, c);
+        bool walkDeath = v.rg.finished && !d.tailDeath;
 
-        // A step-5 death is the ONLY way a finished game can carry spawns: the
-        // collapse walk ends the run before step 5, and step 6 only spawns when
-        // the run survived. So `finished && spN > 0` identifies the branch exactly,
-        // with no need to guess how much hp the walk left behind.
-        bool deathSpawned = v.rg.finished && v.spN > 0;
-        bool entered = d.openStart < MAX_OPEN_PORTALS && c.hpOverflowPerHour > 0 && d.fullRaw >= d.needed;
-
-        _mark(cv, deathSpawned && uint256(v.sp[0].atHour) == d.hFill && uint256(v.rg.diedAtHour) <= d.hNow,
-            "death: the pressure fills the lab and the death lands inside the window");
-        _mark(cv, !v.rg.finished && entered,
-            "death: the lab fills but the death falls past the window, the run survives");
-        _mark(cv, d.openStart == MAX_OPEN_PORTALS && c.hpOverflowPerHour > 0 && !v.rg.finished,
-            "death: not considered, openStart == 12");
-        _mark(cv, c.hpOverflowPerHour == 0 && d.openStart < MAX_OPEN_PORTALS && d.fullRaw >= d.needed && !v.rg.finished,
-            "death: not considered, hpOverflowPerHour == 0");
-        _mark(cv, c.spawnCostUnits == 0 && d.openStart < MAX_OPEN_PORTALS && c.hpOverflowPerHour > 0
-            && v.rg.finished && v.spN == 0 && v.evN == 0,
-            "death: spawnCostUnits == 0 makes needed zero, the branch fires, nothing spawns");
-        _mark(cv, deathSpawned && uint256(v.sp[0].atHour) == d.windowStart, "death: hFill lands exactly on windowStart");
-        _mark(cv, !v.rg.finished && entered && d.hFill == d.hNow, "death: hFill lands exactly on hNow");
-        _mark(cv, deathSpawned && uint256(v.rg.diedAtHour) == d.hNow,
-            "death: the hour of death equals hNow (the bound is not strict)");
-        _mark(cv, deathSpawned && d.fullRaw >= d.needed && d.covered < d.needed,
-            "death: the full window reaches needed where the covered span does not");
-        _mark(cv, deathSpawned && d.fullRaw > SPAWN_DEBT_MAX, "death: spawnDebt saturates at SPAWN_DEBT_MAX");
+        _mark(cv, walkDeath && v.spN > 0 && v.rg.openPortals == MAX_OPEN_PORTALS && v.evN == 0,
+            "death: births fill the lab and the overflow kills inside the window");
+        _mark(cv, walkDeath && v.evN > 0 && _bornThenCollapsed(v, v.evN - 1),
+            "death: a portal born in the window collapses and kills");
+        _mark(cv, d.tailDeath && uint256(v.rg.diedAtHour) <= d.hNow
+            && (v.spN == 0 || uint256(v.sp[v.spN - 1].atHour) <= d.hEnd),
+            "death: beyond the edge, the abandoned lab overflows; no portal is born there");
+        _mark(cv, d.tailDeath && d.tailFill == d.hEnd, "death: beyond the edge, hFill lands exactly on the edge");
+        _mark(cv, d.tailDeath && uint256(v.rg.diedAtHour) == d.hNow,
+            "death: beyond the edge, the hour of death equals hNow (the bound is not strict)");
+        _mark(cv, !v.rg.finished && v.cappedShort && !d.fuse && d.freeAfter == 0 && c.hpOverflowPerHour > 0,
+            "death: not considered beyond the edge, twelve are open there");
+        _mark(cv, c.hpOverflowPerHour == 0 && v.cappedShort && !v.rg.finished && d.tailFill != type(uint256).max,
+            "death: not considered beyond the edge, hpOverflowPerHour == 0");
+        _mark(cv, c.spawnCostUnits == 0 && v.rg.finished && v.spN == 0 && v.evN == 0,
+            "death: spawnCostUnits == 0 makes needed zero, the run dies, nothing spawns");
+        _mark(cv, v.rg.finished && uint256(v.rg.spawnDebt) == SPAWN_DEBT_MAX, "death: spawnDebt saturates at SPAWN_DEBT_MAX");
 
         _mark(cv, !v.rg.finished && v.spN == 0 && v.rg.spawnDebt > v.g.spawnDebt
             && uint256(v.rg.spawnDebt) < uint256(c.spawnCostUnits),
             "survive: the debt accrues, no portal affordable yet");
-        _mark(cv, !v.rg.finished && d.covered > SPAWN_DEBT_MAX, "survive: spawnDebt saturates at SPAWN_DEBT_MAX");
-        _mark(cv, !v.rg.finished && v.cappedShort && d.covered < d.fullRaw && v.spN == 0
-            && uint256(v.rg.spawnDebt) == d.covered,
+        _mark(cv, !v.rg.finished && uint256(v.rg.spawnDebt) == SPAWN_DEBT_MAX, "survive: spawnDebt saturates at SPAWN_DEBT_MAX");
+        _mark(cv, !v.rg.finished && v.cappedShort && !d.fuse && d.covered < d.fullRaw
+            && uint256(v.rg.spawnDebt) == d.debtAtEdge,
             "survive: the debt accrues over the covered span only, the tail is left");
+        _mark(cv, !v.rg.finished && v.cappedShort && !d.fuse && c.hpOverflowPerHour > 0
+            && d.tailFill != type(uint256).max,
+            "survive: the lab would fill beyond the edge, but the death falls past hNow");
+
+        _mark(cv, d.fuse && uint256(v.rg.hoursElapsed) < d.hEnd,
+            "fuse: the event cap stops the walk, reported as cappedShort");
 
         _tagSpawns(cv, v, c, d, cfgs, tps);
+    }
+
+    /// @dev True when collapse record `j` struck a portal that was born in this
+    /// window: the same slot took a birth strictly before the collapse hour (a
+    /// stored portal's collapse in a slot later refilled is at or before the birth).
+    function _bornThenCollapsed(Vec memory v, uint256 j) private pure returns (bool) {
+        for (uint256 k = 0; k < v.spN; k++) {
+            if (v.sp[k].slot == v.ev[j].slot && v.sp[k].atHour < v.ev[j].atHour) return true;
+        }
+        return false;
     }
 
     function _tagSpawns(
@@ -910,12 +1027,30 @@ contract GenSpawnVectors is Script {
         PortalTypeParams[] memory tps
     ) private pure {
         _mark(cv, v.spN == 1, "spawn: exactly one portal created");
-        _mark(cv, v.spN == c.maxSpawnsPerTx && d.affordable > uint256(c.maxSpawnsPerTx)
-            && d.freeAfter > 0,
-            "spawn: maxSpawnsPerTx created, the per-transaction cap binds");
-        _mark(cv, v.spN > 0 && v.spN < d.budget && d.freeAfter == 0,
-            "spawn: fewer free slots than the budget allows");
-        _mark(cv, v.spN == 0 && d.budget > 0 && d.freeAfter == 0, "spawn: no free slot at all, nothing created");
+        _mark(cv, v.spN >= 2 && v.sp[0].atHour != v.sp[v.spN - 1].atHour, "spawn: births at different hours in one window");
+        bool beforeEnd = false;
+        bool delayed = false;
+        for (uint8 k = 0; k < v.spN; k++) {
+            uint256 at = v.sp[k].atHour;
+            if (at < d.hEnd) beforeEnd = true;
+            // Matured an hour or more earlier, yet born only now: a full lab held it.
+            if (at > d.windowStart && _avail(v, d, c, at - 1) >= (uint256(k) + 1) * uint256(c.spawnCostUnits)) {
+                delayed = true;
+            }
+        }
+        _mark(cv, beforeEnd, "spawn: a birth lands at its maturity, before the end of the window");
+        _mark(cv, delayed, "spawn: a matured birth waits for a full lab to free a slot");
+        bool bornCollapsed = false;
+        for (uint256 j = 0; j < v.evN; j++) {
+            if (_bornThenCollapsed(v, j)) bornCollapsed = true;
+        }
+        _mark(cv, bornCollapsed, "spawn: a portal born in the window collapses in the window");
+        _mark(cv, v.spN > 0 && uint256(v.sp[0].atHour) == d.windowStart && v.g.spawnDebt >= c.spawnCostUnits,
+            "spawn: the debt alone births at the window start");
+        _mark(cv, v.spN > 0 && d.freeAfter == 0 && !v.rg.finished && v.rg.spawnDebt >= c.spawnCostUnits,
+            "spawn: fewer free slots than the pressure would buy");
+        _mark(cv, v.spN == 0 && v.evN == 0 && d.openStart == MAX_OPEN_PORTALS && c.spawnCostUnits > 0
+            && v.rg.spawnDebt >= c.spawnCostUnits, "spawn: no free slot at all, nothing created");
         _mark(cv, v.spN >= 2 && v.sp[0].portalType != v.sp[1].portalType && v.sp[0].nameIndex != v.sp[1].nameIndex
             && v.rp[v.sp[0].slot].hoursToCollapse != v.rp[v.sp[1].slot].hoursToCollapse,
             "spawn: two in one call differ in type, hours and name");
@@ -927,18 +1062,16 @@ contract GenSpawnVectors is Script {
         }
         for (uint8 k = 0; k < v.spN; k++) {
             PortalTypeParams memory tp = tps[uint256(v.ts) * 5 + uint8(v.sp[k].portalType)];
-            _mark(cv, tp.hoursMin == tp.hoursMax && v.rp[v.sp[k].slot].hoursToCollapse == tp.hoursMin,
-                "spawn: hoursMin == hoursMax, the span is one");
+            _mark(cv, tp.hoursMin == tp.hoursMax && tp.hoursMin > 0, "spawn: hoursMin == hoursMax, the span is one");
             _mark(cv, v.sp[k].nameIndex == 0, "spawn: nameIndex 0");
             _mark(cv, v.sp[k].nameIndex == 23, "spawn: nameIndex 23");
         }
-        _mark(cv, v.rg.finished && v.spN > 0, "spawn: created in the death branch");
-        _mark(cv, !v.rg.finished && v.spN > 0, "spawn: created in the survival branch");
+        _mark(cv, v.rg.finished && v.spN > 0, "spawn: created in a run that died");
+        _mark(cv, !v.rg.finished && v.spN > 0, "spawn: created in a run that survived");
     }
 
     function _tagRefusal(Cov memory cv, Vec memory v) private pure {
         bool panic = keccak256(bytes(v.err)) == keccak256(bytes("Panic(0x11)"));
-        _mark(cv, panic && v.nowTs < v.g.lastTickAt, "refusal: a stale clock underflows the fill-hour search");
         _mark(cv, panic && v.g.rngNonce == U32_MAX, "refusal: rngNonce at the uint32 ceiling");
         _mark(cv, panic && v.g.rngNonce != U32_MAX && v.g.spawnCount == U32_MAX,
             "refusal: spawnCount at the uint32 ceiling");
@@ -983,7 +1116,7 @@ contract GenSpawnVectors is Script {
         s = string.concat(s, "]");
     }
 
-    function _eventsJson(TimeLib.Collapse[12] memory ev, uint8 n) private pure returns (string memory s) {
+    function _eventsJson(TimeLib.Collapse[64] memory ev, uint8 n) private pure returns (string memory s) {
         s = "[";
         for (uint256 i = 0; i < n; i++) {
             s = string.concat(s, i == 0 ? "" : ",", VectorCodec.collapseJson(ev[i]));
@@ -991,7 +1124,7 @@ contract GenSpawnVectors is Script {
         s = string.concat(s, "]");
     }
 
-    function _spawnsJson(TimeLib.Spawn[12] memory sp, uint8 n) private pure returns (string memory s) {
+    function _spawnsJson(TimeLib.Spawn[64] memory sp, uint8 n) private pure returns (string memory s) {
         s = "[";
         for (uint256 i = 0; i < n; i++) {
             s = string.concat(s, i == 0 ? "" : ",", VectorCodec.spawnJson(sp[i]));

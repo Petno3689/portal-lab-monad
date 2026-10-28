@@ -56,15 +56,14 @@ contract DeployConfigTest is Test {
         assertEq(actual.rescuerCooldownHours, expected.rescuerCooldownHours, "rescuerCooldownHours");
         assertEq(actual.closeStabilityBelow, expected.closeStabilityBelow, "closeStabilityBelow");
         assertEq(actual.closeHoursAtMost, expected.closeHoursAtMost, "closeHoursAtMost");
-        assertEq(actual.maxSpawnsPerTx, expected.maxSpawnsPerTx, "maxSpawnsPerTx");
         assertEq(actual.basePressurePerHour, expected.basePressurePerHour, "basePressurePerHour");
         assertEq(actual.pressureRampPerHour, expected.pressureRampPerHour, "pressureRampPerHour");
         assertEq(actual.spawnCostUnits, expected.spawnCostUnits, "spawnCostUnits");
         assertEq(actual.closePressureBonus, expected.closePressureBonus, "closePressureBonus");
         assertEq(actual.rangeWidenPerHour, expected.rangeWidenPerHour, "rangeWidenPerHour");
-        assertEq(actual.deafNarrowThreshold, expected.deafNarrowThreshold, "deafNarrowThreshold");
         assertEq(actual.epochHours, expected.epochHours, "epochHours");
         assertEq(actual.requestTimeoutHours, expected.requestTimeoutHours, "requestTimeoutHours");
+        assertEq(actual.outsiderTimeoutHours, expected.outsiderTimeoutHours, "outsiderTimeoutHours");
     }
 
     // 3. Per-type parameters are stored verbatim for all five portal types.

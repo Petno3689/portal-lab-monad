@@ -1,11 +1,11 @@
 # Деплой PortalLab на Monad Testnet
 
-## Важно: предсказуемая случайность
+## Случайность
 
-Эта версия использует `RandomStub` — детерминированный генератор (`keccak(address, counter)`).
-Любой желающий может вычислить заранее, какие порталы появятся и каким будет
-результат разведки. **Деплой только в тестнет, только для проверки механики.**
-Настоящая энтропия через Pyth Entropy запланирована на Веху 4.
+Игра использует **Pyth Entropy V2** через отдельный контракт
+`PythEntropySource` (адреса Pyth зашиты в `script/Deploy.s.sol`, SPEC §6.1).
+Деплой — два контракта: сначала `PythEntropySource`, затем `PortalLab` с его
+адресом. **Только тестнет Monad**, в mainnet не деплоим.
 
 ---
 
@@ -13,7 +13,7 @@
 
 - Foundry (Windows: `.tools\foundry-win\forge.exe` и `cast.exe`, Linux: `.tools/foundry/forge` и `cast`)
 - Тестовые монеты Monad: [faucet.monad.xyz](https://faucet.monad.xyz)
-- Деплой стоит около **0,6 MON** по факту; оценка `forge` покажет примерно
+- Деплой стоил 1,285 MON (13 октября 2026) и 1,334 MON (28 октября 2026); оценка `forge` покажет примерно
   вдвое больше, потому что считает по максимальной цене газа.
 
 **Ключ НИКОГДА не попадает в репозиторий и НИКОГДА не передаётся ревьюеру.
@@ -29,37 +29,31 @@
 ## Настройка хранилища ключа (один раз)
 
 Ключ шифруется и хранится в `~/.foundry/keystores` — вне проекта. При каждом
-деплое спрашивается только пароль; сам ключ в терминал больше не вводится.
+деплое спрашивается только пароль.
 
 **Windows (из папки `contracts/`):**
 ```powershell
-..\..\.tools\foundry-win\cast.exe wallet import deployer --interactive
+..\..\.tools\foundry-win\cast.exe wallet import portal-deployer --interactive
 ```
 
 **Linux (из папки `contracts/`):**
 ```bash
-../../.tools/foundry/cast wallet import deployer --interactive
+../../.tools/foundry/cast wallet import portal-deployer --interactive
 ```
 
-`deployer` — псевдоним; можно взять любой. После этого деплой идёт через
-`--account deployer` (см. Шаг 2).
+`portal-deployer` — псевдоним хранилища; деплой идёт через
+`--account portal-deployer`.
 
 ---
 
-## Команда деплоя
+## Команды
 
 ### Шаг 0: Проверить баланс
 
-Нужно не менее 0,7 MON с небольшим запасом.
+Нужно не менее 1,5 MON с запасом.
 
-**Windows:**
 ```powershell
 ..\..\.tools\foundry-win\cast.exe balance <адрес> --rpc-url monad_testnet --ether
-```
-
-**Linux:**
-```bash
-../../.tools/foundry/cast balance <адрес> --rpc-url monad_testnet --ether
 ```
 
 ### Шаг 1: Примерка (обязательно перед отправкой)
@@ -67,65 +61,73 @@
 Проверяет доступность RPC, прохождение конструктора и даёт оценку газа —
 **ничего не тратя**.
 
-**Windows (PowerShell):**
 ```powershell
 ..\..\.tools\foundry-win\forge.exe script script/Deploy.s.sol --rpc-url monad_testnet
 ```
 
-**Linux:**
-```bash
-../../.tools/foundry/forge script script/Deploy.s.sol --rpc-url monad_testnet
-```
-
 ### Шаг 2: Деплой
 
-Использует зашифрованное хранилище (см. «Настройка хранилища» выше). Форж
-спросит пароль от ключа.
-
-**Windows (PowerShell):**
 ```powershell
-..\..\.tools\foundry-win\forge.exe script script/Deploy.s.sol --rpc-url monad_testnet --broadcast --account deployer
+..\..\.tools\foundry-win\forge.exe script script/Deploy.s.sol --rpc-url monad_testnet --broadcast --account portal-deployer
 ```
 
-**Linux:**
-```bash
-../../.tools/foundry/forge script script/Deploy.s.sol --rpc-url monad_testnet --broadcast --account deployer
+Linux: то же с `../../.tools/foundry/forge`.
+
+> **Заметка о флаге `--interactive`.** В Foundry 1.8.3 `-i` / `--interactive`
+> (без значения) читает один ключ интерактивно, а `--interactives <ЧИСЛО>` —
+> другой флаг. Запись `--interactive 1` форж принимает за аргумент скрипта и
+> падает с «encode length mismatch: expected 0 types, got 1». Используйте
+> `--account <имя>` через хранилище.
+
+### Шаг 3: Верификация (Sourcify на MonadVision)
+
+Команды, которые сработали 14 октября 2026. Сначала верифицировать **малый**
+контракт.
+
+28 октября 2026 сервер Sourcify у BlockVision не работал (HTTP 500): повторить
+позже или использовать Monadscan.
+
+Параметры верификатора: `--verifier sourcify --verifier-url
+https://sourcify-api-monad.blockvision.org/`.
+
+**`PythEntropySource`** — аргументы конструктора:
+```powershell
+..\..\.tools\foundry-win\cast.exe abi-encode "constructor(address,address)" <entropy> <provider>
+```
+где `<entropy>` и `<provider>` — адреса из `script/Deploy.s.sol`
+(`PYTH_ENTROPY`, `PYTH_PROVIDER`).
+
+**`PortalLab`** — аргументы конструктора равны входу деплой-транзакции за
+вычетом скомпилированного initcode. Из папки `contracts/`:
+
+```powershell
+$run = Get-Content broadcast\Deploy.s.sol\10143\run-latest.json -Raw | ConvertFrom-Json
+$tx  = ($run.transactions | Where-Object contractName -eq 'PortalLab').transaction
+$code = (Get-Content out\PortalLab.sol\PortalLab.json -Raw | ConvertFrom-Json).bytecode.object
+if (-not $tx.input.ToLower().StartsWith($code.ToLower())) { throw "initcode mismatch - STOP" }
+$labArgs = "0x" + $tx.input.Substring($code.Length)
 ```
 
-> **Заметка о флаге `--interactive`.** В Foundry 1.8.3 есть два разных флага:
-> `-i` / `--interactive` (без значения) читает один ключ интерактивно, и
-> `--interactives <ЧИСЛО>` (со значением) — другой флаг. Запись `--interactive 1`
-> с числом передаёт `1` не туда: форж принимает её за аргумент скрипта и
-> падает с «encode length mismatch: expected 0 types, got 1». Использовать
-> `--account <имя>` через хранилище — надёжнее.
+Затем `forge verify-contract <адрес> <контракт> --chain 10143 --verifier
+sourcify --verifier-url https://sourcify-api-monad.blockvision.org/
+--constructor-args <аргументы>`.
 
-### Шаг 3: Верификация на эксплорере
-
-**Текущий статус: не выполнена, перенесена в Веху 4** (подробности в
-`docs/SPEC.md`, §14.2.8).
-
-Два способа пробовали 30 сентября 2026:
-
-- `forge verify-contract` с верификатором `sourcify` — отваливается по таймауту;
-  один ответ вернул код 429 (сервис перегружен). Посылка тяжёлая:
-  `use_literal_content = true` вшивает все исходники в метаданные.
-- Форма эксплорера (Standard JSON input) — крутилась больше семи минут и не
-  завершилась. Вероятная причина та же плюс `via_ir`, который делает
-  пересборку медленной.
-
-При этом **настройки компиляции проверены и верны**: в сгенерированном
-standard-json лежат компилятор `0.8.28+commit.7893614a`, оптимизатор 200
-прогонов, `evmVersion cancun`, `viaIR`, `bytecodeHash none`, `appendCBOR`.
-Когда верификация будет доступна, настройки уже правильные.
+Результат — статус `match` (совпадение рантайм-байткода); `exact match`
+недостижим при `bytecode_hash = "none"`. Запасной вариант — Monadscan
+(`--verifier etherscan`, нужен API-ключ).
 
 ---
 
-## Что проверить после деплоя
+## После деплоя
+
+1. Записать адреса в `app/src/config.ts` и в адреса README.
+2. Обновить `app/src/PortalLab.abi.json`, если менялся ABI.
+3. Записать деплой в `docs/STATUS.md` (адреса, дата, стоимость).
 
 ### Адрес контракта
 
-Скрипт печатает его в stdout: `PortalLab deployed at: 0x...`
-Если вывод потерялся, адрес сохранён в
+Скрипт печатает его в stdout: `PortalLab deployed at: 0x...`. Если вывод
+потерялся, адрес лежит в
 `contracts/broadcast/Deploy.s.sol/10143/run-latest.json`.
 
 ### Конфигурация
@@ -134,23 +136,38 @@ standard-json лежат компилятор `0.8.28+commit.7893614a`, опти
 ..\..\.tools\foundry-win\cast.exe call <адрес> "config()" --rpc-url monad_testnet
 ```
 
-Значения, которые должны прийти (читать ABI-декодером или через эксплорер):
-- `hpStart = 50`
-- `hpMax = 100`
+Ожидаемые значения — в `contracts/src/GameConfig.sol` того коммита, с которого
+идёт деплой. При расхождении прав `GameConfig.sol`, а этот список надо поправить.
+На ветке `contract-v2` после ребаланса 16 октября:
+- `hpStart = 80`, `hpMax = 100`, `hpCollapsePerDeath = 8`
+- `pressureRampPerHour = 2`
 - `secPerHour = 15`
-- `maxSpawnsPerTx = 3`
+- `epochHours = 36`
+- `requestTimeoutHours = 1`
+- `outsiderTimeoutHours = 40`
+
+(`maxSpawnsPerTx` и `deafNarrowThreshold` удалены из конфигурации.)
 
 ### Ручная проверка на цепочке
 
-```powershell
-# Начать партию
-..\..\.tools\foundry-win\cast.exe send <адрес> "startGame()" --rpc-url monad_testnet --account deployer
+**Не проверено на тестнете.**
 
-# Продвинуть мир (принимает любой вызывающий)
-..\..\.tools\foundry-win\cast.exe send <адрес> "sync(address)" <адрес_игрока> --rpc-url monad_testnet --account deployer
+`startGame` и `act` — `payable`: к ним прикладывается плата Pyth, неиспользованное
+возвращается. Сначала прочитать плату:
+
+```powershell
+..\..\.tools\foundry-win\cast.exe call <PythEntropySource> "fee()(uint256)" --rpc-url monad_testnet
+```
+
+```powershell
+# Начать партию (платит за первое слово)
+..\..\.tools\foundry-win\cast.exe send <адрес> "startGame()" --value <плата> --rpc-url monad_testnet --account portal-deployer
+
+# Продвинуть мир (бесплатно, открыт любому)
+..\..\.tools\foundry-win\cast.exe send <адрес> "sync(address)" <адрес_игрока> --rpc-url monad_testnet --account portal-deployer
 
 # Совершить действие: слот (0–11) и код действия (таблица ниже)
-..\..\.tools\foundry-win\cast.exe send <адрес> "act(uint8,uint8)" <слот> <код> --rpc-url monad_testnet --account deployer
+..\..\.tools\foundry-win\cast.exe send <адрес> "act(uint8,uint8)" <слот> <код> --value <плата> --rpc-url monad_testnet --account portal-deployer
 ```
 
 ### Коды действий (`Action`)
@@ -167,15 +184,13 @@ standard-json лежат компилятор `0.8.28+commit.7893614a`, опти
 | 7 | `Evacuate` | эвакуировать существ |
 | 8 | `Close` | закрыть портал |
 
-### Предупреждения в логе деплоя
-
-Убедиться, что в логе есть строки-предупреждения про `RandomStub`.
-
 ---
 
-## Газ (локальный benchmark, Веха 3.1)
+## Газ (локальный benchmark, Веха 3 — история)
 
-Результаты `forge test --gas-report` на контракте `PortalLab`, 2026-09-30:
+Результаты `forge test --gas-report` на контракте `PortalLab`, 2026-09-30.
+**Это история Вехи 3**: контракт с тех пор изменился (Pyth, эпохи, рождения по
+часам созревания), цифры не актуальны.
 
 | Функция      | min    | avg     | median  | max     |
 |:-------------|-------:|--------:|--------:|--------:|
@@ -188,6 +203,5 @@ standard-json лежат компилятор `0.8.28+commit.7893614a`, опти
 | `config`     |  9 350 |   9 350 |   9 350 |   9 350 |
 
 Все значения в единицах газа EVM. Фактический расход на сети — в `docs/SPEC.md`,
-§14.2.2.
-
-Для справки: в Вехе 0 на игрушечном контракте `tick()` стоил 34 728 газа.
+§14.2.2. Худший случай газа раскрытия на пересечении эпохи — 609 082 (стенд; пик свипа 605 246 с холодным
+storage, 16 октября; STATUS.md).

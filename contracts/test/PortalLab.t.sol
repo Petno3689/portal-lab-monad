@@ -40,7 +40,6 @@ contract PortalLabTest is Test {
         assertEq(c.observersTotal, 3);
         assertEq(c.rescuersTotal, 2);
         assertEq(c.closeStabilityBelow, 40);
-        assertEq(c.maxSpawnsPerTx, 3);
     }
 
     // 2. Per-type parameters are stored, with the distinctive ones checked.
@@ -102,7 +101,7 @@ contract PortalLabTest is Test {
         Game memory g = lab.getGame(address(this));
         assertEq(g.startedAt, 5000);
         assertEq(g.lastTickAt, 5000);
-        assertEq(g.hp, 50);  // hpStart, not hpMax
+        assertEq(g.hp, 80);  // hpStart, not hpMax
         assertEq(g.power, 100);
         assertEq(g.observersFree, 3);
         assertEq(g.rescuersFree, 2);

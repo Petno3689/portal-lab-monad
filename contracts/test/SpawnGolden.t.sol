@@ -94,7 +94,7 @@ contract SpawnGoldenTest is Test {
         PortalTypeParams[] memory tps = VectorCodec.readTypeParams(json, ".typeParams[*]");
         Refusals memory r = _readRefusals(json);
 
-        assertGe(r.n, 3, "expected at least three refusal vectors");
+        assertGe(r.n, 2, "expected at least two refusal vectors");
         assertEq(r.pIn.length, r.n * 12, "refusal portalsIn must hold exactly twelve portals per vector");
         assertEq(r.wantErr.length, r.n, "length mismatch: refusal error");
 
@@ -198,9 +198,9 @@ contract SpawnGoldenTest is Test {
         (
             Game memory g2,
             Portal[12] memory p2,
-            TimeLib.Collapse[12] memory ev,
+            TimeLib.Collapse[64] memory ev,
             uint8 evN,
-            TimeLib.Spawn[12] memory sp,
+            TimeLib.Spawn[64] memory sp,
             uint8 spN,
             bool capped
         ) = TimeLib.catchUp(

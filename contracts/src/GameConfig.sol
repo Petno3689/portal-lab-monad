@@ -13,12 +13,14 @@ library GameConfig {
     function config() internal pure returns (Config memory c) {
         // time
         c.secPerHour = 15;
+        // Unused since v2: a long absence is walked event by event (SPEC §5.5).
+        // Kept so Config's storage layout, the ABI and the golden vectors stay unchanged.
         c.longAbsenceHours = 20;
         // HP
         c.hpMax = 100;
-        c.hpStart = 50;
+        c.hpStart = 80;
         c.hpCollapseBase = 20;
-        c.hpCollapsePerDeath = 10;
+        c.hpCollapsePerDeath = 8;
         c.hpEmptyCollapse = 3;
         c.hpOverflowPerHour = 5;
         c.healPerCreature = 3;
@@ -45,18 +47,18 @@ library GameConfig {
         // spawns — pressure measured in units; one portal costs spawnCostUnits units.
         // A fresh lab accrues ~one portal's worth of pressure per ten game hours,
         // the ramp speeds that up over the run, and closing grants 1/4 of a portal.
-        c.maxSpawnsPerTx = 3;
         c.basePressurePerHour = 1000;
-        c.pressureRampPerHour = 1;
+        c.pressureRampPerHour = 2;
         c.spawnCostUnits = 10_000;
         c.closePressureBonus = 2500;
         // survey / knowledge decay
         c.rangeWidenPerHour = 1;
-        c.deafNarrowThreshold = 10;
-        // spawn entropy — one random word pinned per 12 game-hour epoch (Ticket 4.5).
-        c.epochHours = 12;
-        // a deferral stuck this long (real time) can be cancelled by anyone (Ticket 4.7).
+        // spawn entropy — one random word pinned per 36 game-hour epoch (Ticket 4.5).
+        c.epochHours = 36;
+        // a deferral stuck this long (real time) can be cancelled by its player (Ticket 4.7);
+        // anyone else must wait the longer outsider timeout (40 h = 10 real minutes).
         c.requestTimeoutHours = 1;
+        c.outsiderTimeoutHours = 40;
     }
 
     /// @notice Canonical per-type parameters, one per `PortalType`, in enum order.

@@ -10,7 +10,7 @@ import {PortalLabHarness} from "./utils/PortalLabHarness.sol";
 /// @notice State is prepared through `PortalLabHarness`. Structs are built fresh
 /// by helpers (never assigned by copy — CLAUDE.md rule). All numbers below match
 /// `DefaultConfig`: secPerHour 15, hpMax 100, hpCollapseBase 20,
-/// hpCollapsePerDeath 10, hpEmptyCollapse 3, hpOverflowPerHour 5,
+/// hpCollapsePerDeath 8, hpEmptyCollapse 3, hpOverflowPerHour 5,
 /// powerMax 100, powerRegenPerHour 5; degrade per hour: Flash 6, Deaf 3,
 /// Energetic 3 (yield 4).
 contract TimeTest is Test {
@@ -171,8 +171,8 @@ contract TimeTest is Test {
         _warpHours(3);
         harness.sync(player);
 
-        // deaths = 2 + observer + rescuer = 4; hpLost = 20 + 10*4 = 60.
-        assertEq(_game_().hp, 40); // 100 - 60
+        // deaths = 2 + observer + rescuer = 4; hpLost = 20 + 8*4 = 52.
+        assertEq(_game_().hp, 48); // 100 - 52
         // Dead crew does NOT return to the pool.
         assertEq(_game_().observersFree, 2);
         assertEq(_game_().rescuersFree, 1);
@@ -197,9 +197,9 @@ contract TimeTest is Test {
         _warpHours(4);
         harness.sync(player);
 
-        // deaths = (1 + 4) / 2 = 2; hpLost = 20 + 10*2 = 40. If `creatures` (9)
-        // were read, hpLost would be 20 + 90 = 110 and hp would floor to 0.
-        assertEq(_game_().hp, 60); // 100 - 40
+        // deaths = (1 + 4) / 2 = 2; hpLost = 20 + 8*2 = 36. If `creatures` (9)
+        // were read, hpLost would be 20 + 72 = 92 and hp would be 8, not 64.
+        assertEq(_game_().hp, 64); // 100 - 36
     }
 
     // ── Group 7: Collapses are ordered; death fixes at the FIRST ──────────────
@@ -211,7 +211,7 @@ contract TimeTest is Test {
         harness.setGame(player, g);
 
         Portal memory a = _p();
-        a.creatures = 4; // deaths 4 -> hpLost 60 (>= hp 50)
+        a.creatures = 4; // deaths 4 -> hpLost 20 + 8*4 = 52 (>= hp 50)
         a.hoursToCollapse = 3; // collapses at hour 3
         harness.setPortal(player, 0, a);
 
@@ -309,7 +309,7 @@ contract TimeTest is Test {
         harness.setGame(player, g);
 
         Portal memory p = _p();
-        p.creatures = 4; // deaths 4 -> hpLost 60 >= hp 50
+        p.creatures = 4; // deaths 4 -> hpLost 20 + 8*4 = 52 >= hp 50
         p.hoursToCollapse = 3; // collapses (and kills) at hour 3
         harness.setPortal(player, 0, p);
 

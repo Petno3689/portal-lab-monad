@@ -111,7 +111,7 @@ contract CatchUpGoldenTest is Test {
         (
             Game memory g2,
             Portal[12] memory p2,
-            TimeLib.Collapse[12] memory ev,
+            TimeLib.Collapse[64] memory ev,
             uint8 evN,
             ,
             uint8 spawnCount,

@@ -241,25 +241,18 @@ export function applyBlindRescuerReveal(
 
 /**
  * Mirror of EffectsLib.survey. `precise` is true when the survey produced exact
- * values, false when a deaf portal's ranges were only narrowed.
- *
- * The `exact` condition is evaluated with the same short-circuit order as the
- * contract: `_width` panics on an inverted range, so which widths get evaluated
- * decides whether a vector reverts.
+ * values, false when a deaf portal's ranges were only narrowed (its first
+ * survey, which also sets `narrowedOnce`; the next survey reads exact).
  */
 export function survey(
     p0: Portal,
-    c: Config,
+    _c: Config,
     tp: PortalTypeParams,
     word: bigint,
 ): { portal: Portal; precise: boolean } {
     const p: Portal = { ...p0 };
 
-    const exact =
-        tp.surveyPrecise ||
-        (width(p.energyLo, p.energyHi) <= c.deafNarrowThreshold &&
-            width(p.stabilityLo, p.stabilityHi) <= c.deafNarrowThreshold &&
-            width(p.creaturesLo, p.creaturesHi) <= c.deafNarrowThreshold);
+    const exact = tp.surveyPrecise || p.narrowedOnce;
 
     if (exact) {
         const energy = inRange(fromWord(word, 0n), p.energyLo, p.energyHi);
@@ -279,10 +272,11 @@ export function survey(
         return { portal: p, precise: true };
     }
 
-    // Deaf and still too wide: halve each range around a random centre.
+    // Deaf first pass: halve each range around a random centre and mark the portal.
     [p.energyLo, p.energyHi] = narrow(p.energyLo, p.energyHi, fromWord(word, 0n));
     [p.stabilityLo, p.stabilityHi] = narrow(p.stabilityLo, p.stabilityHi, fromWord(word, 1n));
     [p.creaturesLo, p.creaturesHi] = narrow(p.creaturesLo, p.creaturesHi, fromWord(word, 2n));
+    p.narrowedOnce = true;
     return { portal: p, precise: false };
 }
 
@@ -306,11 +300,6 @@ function inRange(rnd: bigint, lo: bigint, hi: bigint): bigint {
     if (lo === hi) return lo;
     const span = subChecked(hi, lo) + 1n;
     return trunc(lo + (rnd % span), 8);
-}
-
-/** `_width`: `hi - lo` on uint8 operands — panics on an inverted range. */
-function width(lo: bigint, hi: bigint): bigint {
-    return subChecked(hi, lo);
 }
 
 /** `_narrow`: truncating division like the rest of the library. */
@@ -350,6 +339,7 @@ export function emptyPortal(): Portal {
         nameIndex: 0n,
         status: PortalStatus.Empty,
         surveyed: false,
+        narrowedOnce: false,
         observerInside: false,
         rescuerInside: false,
         surveyPending: false,

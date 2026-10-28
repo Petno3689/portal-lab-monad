@@ -237,35 +237,30 @@ library EffectsLib {
 
     /// @notice Apply a survey to `p` using a delivered random `word` (SPEC §6.3).
     /// Returns the updated portal and whether the survey produced an exact value
-    /// (`precise == true`) or merely narrowed the ranges (`precise == false`, deaf
-    /// portals not yet at the threshold). Called by `PortalLab.receiveWord` in the
+    /// (`precise == true`) or merely narrowed the ranges (`precise == false`, a
+    /// deaf portal's first survey). Called by `PortalLab.receiveWord` in the
     /// reveal phase of the two-phase survey.
     ///
-    /// Precise types (`tp.surveyPrecise`) — and deaf portals whose three ranges
-    /// have already been narrowed to `deafNarrowThreshold` — read the exact
+    /// Precise types (`tp.surveyPrecise`) — and deaf portals already narrowed by
+    /// an earlier survey (`narrowedOnce`) — read the exact
     /// energy/stability/creatures inside their CURRENT ranges and collapse each
     /// range to a point (`lo == hi == value`), so the struct never holds two
     /// contradicting sources of truth. `surveyed` becomes true.
     ///
-    /// Deaf types not yet narrow enough only halve each range around a random
-    /// centre and stay `surveyed == false`: a second visit is required (SPEC
-    /// §3.1, Decision 2 — this is the price of the deaf type).
+    /// A deaf portal's first survey only halves each range around a random
+    /// centre, sets `narrowedOnce` and leaves `surveyed == false`: a second visit
+    /// is required (SPEC §3.1 — this is the price of the deaf type).
     ///
     /// @dev The three per-parameter draws come from the ONE word via
     /// `_fromWord(word, salt)` (Ticket 4.4 §2.3); the salt keeps energy, stability
     /// and creatures uncorrelated. `RandomStub.inRange` maps each onto its range,
     /// unchanged — it is the distribution contract and must not be touched.
-    function survey(Portal memory p, Config memory c, PortalTypeParams memory tp, uint256 word)
+    function survey(Portal memory p, Config memory, PortalTypeParams memory tp, uint256 word)
         internal
         pure
         returns (Portal memory, bool precise)
     {
-        bool exact = tp.surveyPrecise
-            || (
-                _width(p.energyLo, p.energyHi) <= c.deafNarrowThreshold
-                    && _width(p.stabilityLo, p.stabilityHi) <= c.deafNarrowThreshold
-                    && _width(p.creaturesLo, p.creaturesHi) <= c.deafNarrowThreshold
-            );
+        bool exact = tp.surveyPrecise || p.narrowedOnce;
 
         if (exact) {
             // Different salts keep the three parameters uncorrelated.
@@ -286,8 +281,9 @@ library EffectsLib {
             return (p, true);
         }
 
-        // Deaf, still too wide: halve each of the three ranges around a random
-        // centre. `surveyed` stays false.
+        // Deaf first pass: halve each of the three ranges around a random
+        // centre and mark the portal. `surveyed` stays false.
+        p.narrowedOnce = true;
         (p.energyLo, p.energyHi) = _narrow(p.energyLo, p.energyHi, _fromWord(word, 0));
         (p.stabilityLo, p.stabilityHi) = _narrow(p.stabilityLo, p.stabilityHi, _fromWord(word, 1));
         (p.creaturesLo, p.creaturesHi) = _narrow(p.creaturesLo, p.creaturesHi, _fromWord(word, 2));
@@ -300,11 +296,6 @@ library EffectsLib {
     /// derivation needs only the word and the salt. Feeds `RandomStub.inRange`.
     function _fromWord(uint256 word, uint8 salt) internal pure returns (uint256) {
         return uint256(keccak256(abi.encode(word, salt)));
-    }
-
-    /// @dev Width of an inclusive range.
-    function _width(uint8 lo, uint8 hi) private pure returns (uint8) {
-        return hi - lo;
     }
 
     /// @dev Halve `[lo, hi]` around a random centre `c` inside it: new half-width

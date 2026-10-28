@@ -5,9 +5,18 @@
  * Source of truth is contracts/src/TimeLib.sol and nothing else. Where this file
  * and the Solidity disagree, the mirror is wrong. The order of operations inside
  * `catchUp` is kept step for step with the contract: where the order is visible in
- * the result (the cooldown sweep before the walk, the segment's resource regen
- * before its overflow, ageing the survivors before spawning) it must not be
- * rearranged or "simplified".
+ * the result (collapses and births walked in ONE chronological pass with a
+ * collapse first at an equal hour, a segment's resource regen before its
+ * overflow, the rescuer release AFTER the walk at the stamped hour, ageing the
+ * survivors last) it must not be rearranged or "simplified".
+ *
+ * The algorithm: a portal is born at the hour its pressure matures (and a slot is
+ * free), not at the hour of the call that ages the world, so one catch-up to `c`
+ * equals a catch-up to `b` followed by one to `c`. The world is walked by EVENTS
+ * (collapses of stored portals and of portals born in the window, and births),
+ * never by hours; an event fuse of MAX_CATCHUP_EVENTS stops a walk that would
+ * process more, and the next call continues from where it stopped. A clock behind
+ * `lastTickAt` is clamped to it.
  *
  * ── Argument mutation ───────────────────────────────────────────────────────
  *
@@ -21,11 +30,11 @@
  * portal up front (one level is enough: each field is a bigint, a boolean or an
  * enum) and works on the copies. A caller may keep using the object it passed in.
  *
- * The one exception is the module-private `spawn`, which mirrors the contract's
- * private `_spawn` and writes into the game and the portal array it is handed —
- * exactly as the Solidity does. It is never reachable from outside, and the only
- * thing ever handed to it is the pair of COPIES `catchUp` already made, so the
- * guarantee above still holds for every caller.
+ * The module-private helpers (`advance`, `collapse`, `birth`) write into the game,
+ * the portal array and the walk state they are handed — exactly as the Solidity
+ * private functions write through their memory arguments. They are never
+ * reachable from outside, and the only things ever handed to them are the copies
+ * `catchUp` already made, so the guarantee above still holds for every caller.
  *
  * Arithmetic is bigint throughout; division truncates, as in Solidity. Every
  * narrowing cast the contract writes (`uint8(x)`, `uint16(x)`, …) is mirrored
@@ -47,6 +56,7 @@ import { keccak256 } from "./keccak";
 import {
     Config,
     Game,
+    MAX_CATCHUP_EVENTS,
     MAX_OPEN_PORTALS,
     MAX_RESCUERS,
     Portal,
@@ -68,6 +78,9 @@ const SALT_NAME = 5n;
 
 /** Mirror of PortalLabTypes.NAME_POOL_SIZE. */
 const NAME_POOL_SIZE = 24n;
+
+/** Mirror of TimeLib.NONE: "no such hour" — an empty slot's collapse hour, no birth pending. */
+const NONE = (1n << 256n) - 1n;
 
 /** 32-byte big-endian encoding of a uint256 into `buf` at `offset`. */
 function putWord(buf: Uint8Array, offset: number, value: bigint): void {
@@ -165,8 +178,35 @@ export interface CatchUpResult {
     cappedShort: boolean;
 }
 
+/** Mirror of TimeLib.Walk — the working state of one walk. */
+interface Walk {
+    sph: bigint; // seconds per game hour
+    h0: bigint; // window start: h(lastTickAt)
+    hEnd: bigint; // last hour the world may reach: hNow, or the pinned edge
+    hNow: bigint; // h(nowTs)
+    debt0: bigint; // stored spawnDebt at the window start
+    aEnd: bigint; // A(hEnd): the pressure available at the end of the walk
+    cursor: bigint; // the walk has lived up to this hour
+    births: bigint; // portals born in this window
+    nextMature: bigint; // hour the (births+1)-th portal's pressure matures (NONE: not by hEnd)
+    openCount: bigint; // portals open at `cursor`
+    yieldSum: bigint; // their power yield per hour
+    nEv: bigint; // events processed (collapses + births)
+    colSlot: bigint; // slot of the next collapse
+    colNext: bigint; // its hour (NONE: no portal open)
+    birthsOk: boolean; // births allowed: a portal costs pressure and [h0, hEnd] is pinned
+    died: boolean;
+    deathHour: bigint;
+    oldWord: bigint;
+    newWord: bigint;
+    split: bigint; // storedCoveredEpochs
+    seedEpoch: bigint; // epoch whose seed is cached in `seed` (NONE: nothing cached)
+    seed: bigint;
+}
+
 /**
- * Mirror of TimeLib.catchUp: bring `g0` and `portals0` forward to `nowTs`.
+ * Mirror of TimeLib.catchUp: bring `g0` and `portals0` forward to `nowTs`,
+ * birthing only into epochs pinned to a word.
  *
  * @param portals0 exactly MAX_OPEN_PORTALS (12) portals — the contract's fixed array.
  * @param types one PortalTypeParams per PortalType, in enum order (five entries).
@@ -199,372 +239,423 @@ export function catchUp(
         return { game: g, portals, events, spawns, cappedShort: false };
     }
 
-    const sph = c.secPerHour;
-    const eph = c.epochHours;
-    const hNow = subChecked(nowTs, g.startedAt) / sph;
-    let cursor = subChecked(g.lastTickAt, g.startedAt) / sph; // == g.hoursElapsed
-    const windowStart = cursor; // saved: the walk mutates `cursor`
+    // A clock behind lastTickAt means no time has passed: the result equals the
+    // call at lastTickAt.
+    if (nowTs < g.lastTickAt) nowTs = g.lastTickAt;
 
-    // How far the world may be aged for RANDOM spawns: only into epochs pinned to
-    // a word. `hWalkEnd` is the last such hour, never behind where the world
-    // already is.
-    let hWalkEnd: bigint;
-    if (maxCoveredEpochs === 0n) {
-        hWalkEnd = windowStart; // nothing pinned yet: the world cannot advance
-    } else {
-        const maxAdvanceHour = subChecked(maxCoveredEpochs * eph, 1n);
-        hWalkEnd = hNow < maxAdvanceHour ? hNow : maxAdvanceHour;
-        if (hWalkEnd < windowStart) hWalkEnd = windowStart;
+    const w: Walk = {
+        sph: c.secPerHour,
+        h0: 0n,
+        hEnd: 0n,
+        hNow: 0n,
+        debt0: g.spawnDebt,
+        aEnd: 0n,
+        cursor: 0n,
+        births: 0n,
+        nextMature: NONE,
+        openCount: 0n,
+        yieldSum: 0n,
+        nEv: 0n,
+        colSlot: 0n,
+        colNext: NONE,
+        birthsOk: false,
+        died: false,
+        deathHour: 0n,
+        oldWord,
+        newWord,
+        split: storedCoveredEpochs,
+        seedEpoch: NONE,
+        seed: 0n,
+    };
+    w.hNow = subChecked(nowTs, g.startedAt) / w.sph;
+    w.h0 = subChecked(g.lastTickAt, g.startedAt) / w.sph; // == g.hoursElapsed
+    w.cursor = w.h0;
+
+    // How far the world may be walked: only through epochs pinned to a word
+    // (epoch e is pinned iff e < maxCoveredEpochs). With nothing pinned the world
+    // stays where it is. Births are allowed only when every hour of [h0, hEnd]
+    // lies in a pinned epoch, and only when a portal costs pressure.
+    const edge = maxCoveredEpochs === 0n ? w.h0 : subChecked(maxCoveredEpochs * c.epochHours, 1n);
+    w.birthsOk = maxCoveredEpochs > 0n && w.h0 <= edge && c.spawnCostUnits > 0n;
+    const room = edge > w.h0 ? edge - w.h0 : 0n;
+    const ahead = subChecked(w.hNow, w.h0); // nowTs >= lastTickAt after the clamp
+    w.hEnd = w.h0 + (ahead < room ? ahead : room);
+    let cappedShort = w.hEnd < w.hNow;
+    w.aEnd = w.debt0 + spawnPressure(w.h0, w.hEnd, c);
+
+    // 2. Collapse hour of every occupied slot, the open count and the yield.
+    const colHour: bigint[] = [];
+    for (let i = 0; i < Number(MAX_OPEN_PORTALS); i++) {
+        const p = portals[i];
+        if (p.status === PortalStatus.Empty) {
+            colHour.push(NONE);
+            continue;
+        }
+        w.openCount += 1n;
+        w.yieldSum += types[p.portalType].powerYieldPerHour;
+        // collapse hour == h(snapshotAt) + hoursToCollapse == h(collapseAt).
+        colHour.push(subChecked(p.snapshotAt, g.startedAt) / w.sph + p.hoursToCollapse);
     }
-    const cappedShort = hWalkEnd < hNow;
+    findNextCollapse(colHour, w);
 
-    // 1b. Release rescuers whose recovery cooldown has matured (SPEC §4.3). A
-    //     COMPARISON against the advanced hour, never a per-hour loop.
-    //     `rescuersFree += 1` cannot overflow its uint8: the guard caps it at
-    //     `rescuersTotal`, itself a uint8.
+    // 3. One chronological pass over the events. O(events), never O(hours).
+    w.nextMature = w.birthsOk ? matureHour(w, c, w.h0) : NONE;
+    const fuse = walk(g, portals, colHour, w, c, types, events, spawns);
+    // The last segment, to the end of the window. After a blown fuse the walk
+    // stops at the hour of the last processed event instead.
+    if (!w.died && !fuse) advance(g, w, c, w.hEnd);
+    if (fuse) cappedShort = true;
+    const hStop = fuse ? w.cursor : w.hEnd;
+
+    // 4. Beyond the pinned edge (§5.5): the world cannot be walked there (no word,
+    //    so no births), but the abandoned-lab overflow needs no word. From the
+    //    state at hEnd, find the hour the remaining pressure would fill the lab;
+    //    if the ensuing overflow is lethal by hNow, the run ends then. No portal
+    //    is created in the tail. A lab already full at hEnd is not considered.
+    //    Not applied after a blown fuse.
+    let tailDeath = false;
+    if (!w.died && !fuse && cappedShort && c.hpOverflowPerHour > 0n && w.openCount < MAX_OPEN_PORTALS) {
+        const debtE = subChecked(w.aEnd, w.births * c.spawnCostUnits);
+        const needed = (MAX_OPEN_PORTALS - w.openCount) * c.spawnCostUnits;
+        if (debtE + spawnPressure(w.hEnd, w.hNow, c) >= needed) {
+            const hFill = firstHour(w.hEnd, w.hEnd, w.hNow, debtE, needed, c);
+            const ov = c.hpOverflowPerHour;
+            const dh = hFill + (g.hp + ov - 1n) / ov; // + ceil(hp / ov)
+            if (dh <= w.hNow) {
+                w.died = true;
+                w.deathHour = dh;
+                tailDeath = true;
+            }
+        }
+    }
+
+    // 5. Commit. `hFreeze` is the hour the stored world is stamped at; spawn debt
+    //    is the pressure available then, less what the births spent.
+    let hFreeze: bigint;
+    let effTs: bigint;
+    if (w.died) {
+        // A walk death freezes the world at the death hour (never behind the
+        // window start); a tail death freezes it at the edge it never got past.
+        hFreeze = tailDeath ? w.hEnd : w.deathHour > w.h0 ? w.deathHour : w.h0;
+        effTs = trunc(g.startedAt + hFreeze * w.sph, 40);
+        g.hp = 0n;
+        g.finished = true;
+        g.diedAtHour = trunc(w.deathHour, 32);
+        g.hoursElapsed = trunc(w.deathHour, 32);
+        // The clock of a finished game stops at its death, whoever looks later.
+        g.lastTickAt = trunc(g.startedAt + w.deathHour * w.sph, 40);
+    } else {
+        hFreeze = hStop;
+        // A world that could not reach `nowTs` is stamped at the hour it stopped,
+        // NOT `nowTs`, so the next call resumes from there.
+        effTs = cappedShort ? trunc(g.startedAt + hStop * w.sph, 40) : nowTs;
+        g.hoursElapsed = trunc(hStop, 32);
+        g.lastTickAt = effTs;
+    }
+    const debtOut = subChecked(available(w, c, hFreeze), w.births * c.spawnCostUnits);
+    g.spawnDebt = debtOut > SPAWN_DEBT_MAX ? SPAWN_DEBT_MAX : trunc(debtOut, 32);
+    g.openPortals = trunc(w.openCount, 8);
+
+    // Release rescuers whose recovery cooldown has matured by the stamped hour
+    // (SPEC §4.3). A COMPARISON against that hour, never a per-hour loop.
+    // `rescuersFree` is capped at `rescuersTotal`, itself a uint8.
     for (let i = 0n; i < MAX_RESCUERS; i++) {
         const readyAt = rescuerReadyAt(g, i);
-        if (readyAt !== 0n && readyAt <= hWalkEnd) {
+        if (readyAt !== 0n && readyAt <= hFreeze) {
             setRescuerReadyAt(g, i, 0n);
             if (g.rescuersFree < c.rescuersTotal) g.rescuersFree += 1n;
         }
     }
 
-    // 2. Collect collapse events (occupied portals whose collapse hour has
-    //    arrived) and tally the currently-open portals and their power yield.
-    const evSlot: bigint[] = [];
-    const evHour: bigint[] = [];
-    let openCount = 0n;
-    let yieldSum = 0n;
-    for (let i = 0; i < Number(MAX_OPEN_PORTALS); i++) {
-        const p = portals[i];
-        if (p.status === PortalStatus.Empty) continue;
-        openCount += 1n;
-        yieldSum += types[p.portalType].powerYieldPerHour;
-        // collapse hour == h(snapshotAt) + hoursToCollapse == h(collapseAt).
-        const ch = subChecked(p.snapshotAt, g.startedAt) / sph + p.hoursToCollapse;
-        if (ch <= hWalkEnd) {
-            evSlot.push(BigInt(i));
-            evHour.push(ch);
-        }
-    }
-    // Occupancy at the START of the window, taken HERE — before the walk — for
-    // step 5's fill threshold `(12 - openStart) * spawnCostUnits`. It is NOT the
-    // same number as `openCount`, which keeps dropping as the walk below collapses
-    // portals; reading the post-walk count instead would lower the threshold and
-    // declare an abandoned lab full too early.
-    const openStart = openCount;
-
-    // 3. Insertion sort events by hour ascending (stable, <= 12 elements). The
-    //    stability is observable: two portals due in the same hour must come out
-    //    in slot order, which is the order step 2 collected them in.
-    const evN = evSlot.length;
-    for (let a = 1; a < evN; a++) {
-        const slotA = evSlot[a];
-        const hourA = evHour[a];
-        let b = a;
-        while (b > 0 && evHour[b - 1] > hourA) {
-            evHour[b] = evHour[b - 1];
-            evSlot[b] = evSlot[b - 1];
-            b -= 1;
-        }
-        evHour[b] = hourA;
-        evSlot[b] = slotA;
-    }
-
-    // 4. Walk the timeline in segments: cursor -> each event hour -> hWalkEnd.
-    //    O(events) segments, never O(hours).
-    let died = false;
-    let deathHour = 0n;
-    for (let k = 0; k <= evN; k++) {
-        const segEnd = k < evN ? evHour[k] : hWalkEnd;
-        const delta = segEnd > cursor ? segEnd - cursor : 0n; // game hours in this segment
-
-        if (delta > 0n) {
-            // Resource: regen plus the yield of every open portal.
-            const rate = c.powerRegenPerHour + yieldSum;
-            let np = g.power + rate * delta;
-            if (np > c.powerMax) np = c.powerMax;
-            g.power = trunc(np, 16);
-
-            // Overflow: only when exactly 12 portals are open.
-            if (openCount === MAX_OPEN_PORTALS && c.hpOverflowPerHour > 0n) {
-                const ov = c.hpOverflowPerHour;
-                const hToDeath = (g.hp + ov - 1n) / ov; // ceil(hp / ov)
-                if (hToDeath <= delta) {
-                    died = true;
-                    deathHour = cursor + hToDeath;
-                    g.hp = 0n;
-                    break;
-                }
-                // hToDeath > delta => ov*delta < hp, so no underflow.
-                g.hp = trunc(g.hp - ov * delta, 16);
-            }
-        }
-
-        if (segEnd > cursor) cursor = segEnd;
-
-        // At the event moment: collapse the portal.
-        if (k < evN) {
-            const s = Number(evSlot[k]);
-            const p = portals[s];
-            // Read all needed fields BEFORE blanking the slot.
-            let deaths = p.creaturesKnown ? p.creatures : (p.creaturesLo + p.creaturesHi) / 2n;
-            if (p.observerInside) deaths += 1n;
-            if (p.rescuerInside) deaths += 1n;
-            const yld = types[p.portalType].powerYieldPerHour;
-
-            // An empty collapse still costs hpEmptyCollapse — it is the keeper's
-            // failure, unlike closing an empty portal (free, §4.4).
-            const hpLost = deaths > 0n ? c.hpCollapseBase + c.hpCollapsePerDeath * deaths : c.hpEmptyCollapse;
-
-            const hpBefore = g.hp;
-            const actualLost = hpBefore > hpLost ? hpLost : hpBefore; // min(loss, hp before the hit)
-
-            // `deaths` truncates to uint8 in the event while the HP charge is for
-            // all of them: two different numbers, deliberately.
-            events.push({
-                slot: evSlot[k],
-                deaths: trunc(deaths, 8),
-                hpLost: trunc(actualLost, 16),
-                atHour: trunc(evHour[k], 32),
-            });
-
-            g.hp = trunc(hpBefore - actualLost, 16);
-
-            // Crew inside dies and does NOT return to the pool (§4.3). The slot is
-            // freed: a fresh zeroed portal (status == Empty).
-            portals[s] = emptyPortal();
-            openCount -= 1n;
-            yieldSum -= yld;
-
-            if (g.hp === 0n) {
-                died = true;
-                deathHour = evHour[k];
-                break;
-            }
-        }
-    }
-
-    g.openPortals = trunc(openCount, 8);
-
-    // 5. Pressure & spawns. Only meaningful while the run survived the walk above
-    //    — a death there already ended it, and spawnDebt is irrelevant to a
-    //    finished game.
-    if (!died) {
-        const debt0 = g.spawnDebt;
-
-        // Long-absence overflow: a DETERMINISTIC death that needs NO word, so it
-        // is evaluated over the FULL window `[windowStart, hNow]` even when the
-        // covered edge is nearer — the cap gates the RANDOM spawns only. THE TWO
-        // LIMITS BELOW ARE DIFFERENT ON PURPOSE: `hNow` here, `hWalkEnd` in the
-        // survival accrual further down. Writing both against the covered edge
-        // would diverge from the chain on exactly the commonest input there is —
-        // a player who stayed away a long time.
-        const fullRaw = debt0 + spawnPressure(windowStart, hNow, c);
-        const needed = (MAX_OPEN_PORTALS - openStart) * c.spawnCostUnits;
-        if (openStart < MAX_OPEN_PORTALS && c.hpOverflowPerHour > 0n && fullRaw >= needed) {
-            const hFill = fillHour(windowStart, hNow, debt0, needed, c);
-            const ov = c.hpOverflowPerHour;
-            const hToDeath = (g.hp + ov - 1n) / ov; // ceil(hp / ov)
-            const dh = hFill + hToDeath;
-            if (dh <= hNow) {
-                g.spawnDebt = fullRaw > SPAWN_DEBT_MAX ? SPAWN_DEBT_MAX : trunc(fullRaw, 32);
-                // Create up to maxSpawnsPerTx REAL portals (the rest are pointless
-                // — the player is dead), then freeze at death. Both arguments are
-                // narrowed by the contract before `_spawn` sees them.
-                spawns.push(
-                    ...spawn(
-                        g,
-                        portals,
-                        c,
-                        types,
-                        oldWord,
-                        newWord,
-                        storedCoveredEpochs,
-                        trunc(hFill, 32),
-                        trunc(g.startedAt + hFill * sph, 40),
-                    ),
-                );
-                g.hp = 0n;
-                died = true;
-                deathHour = dh;
-            }
-        }
-        if (!died) {
-            // Survived: accrue only the COVERED span into spawnDebt. The uncovered
-            // tail (hWalkEnd..hNow) is not yet lived — it accrues on the next call
-            // once a word pins its epochs. No pressure is lost.
-            const raw = debt0 + spawnPressure(windowStart, hWalkEnd, c);
-            g.spawnDebt = raw > SPAWN_DEBT_MAX ? SPAWN_DEBT_MAX : trunc(raw, 32);
-        }
-    }
-
-    // 6. Commit.
-    if (died) {
-        // Freeze the world at the moment of death — survivors are NOT aged, and
-        // the stamp is `nowTs`, not the covered edge.
-        g.finished = true;
-        g.diedAtHour = trunc(deathHour, 32);
-        g.hoursElapsed = trunc(deathHour, 32);
-        g.lastTickAt = nowTs;
-    } else {
-        // When the world could not reach `nowTs` (capped at the pinned edge),
-        // stamp time at the EDGE hour, not `nowTs`, so the next call resumes from
-        // the edge and the uncovered tail is not skipped.
-        const effTs = cappedShort ? trunc(g.startedAt + hWalkEnd * sph, 40) : nowTs;
-        g.hoursElapsed = trunc(hWalkEnd, 32);
-        g.lastTickAt = effTs;
-        // Age each survivor by e = hWalkEnd - h(snapshotAt) and re-snapshot.
-        for (let i = 0; i < Number(MAX_OPEN_PORTALS); i++) {
-            const p = portals[i];
-            if (p.status === PortalStatus.Empty) continue;
-            const hSnap = subChecked(p.snapshotAt, g.startedAt) / sph;
-            const e = subChecked(hWalkEnd, hSnap); // survivors have hoursToCollapse > e
-            if (p.surveyed) {
-                const deg = types[p.portalType].degradePerHour * e;
-                p.stability = p.stability > deg ? trunc(p.stability - deg, 8) : 0n;
-            } else {
-                // Unsurveyed: knowledge decays — the energy and stability ranges
-                // drift outward by rangeWidenPerHour on each bound per game hour.
-                // The CREATURES range is deliberately left untouched.
-                const widen = c.rangeWidenPerHour * e;
-                p.energyLo = p.energyLo > widen ? trunc(p.energyLo - widen, 8) : 0n;
-                const eHi = p.energyHi + widen;
-                p.energyHi = eHi > 100n ? 100n : trunc(eHi, 8);
-                p.stabilityLo = p.stabilityLo > widen ? trunc(p.stabilityLo - widen, 8) : 0n;
-                const sHi = p.stabilityHi + widen;
-                p.stabilityHi = sHi > 100n ? 100n : trunc(sHi, 8);
-            }
-            p.hoursToCollapse = p.hoursToCollapse > e ? trunc(p.hoursToCollapse - e, 16) : 0n;
-            p.snapshotAt = effTs;
-        }
-
-        // Lazy spawns: create up to maxSpawnsPerTx portals from the accrued
-        // pressure into the first free slots (SPEC §7), at the edge hour
-        // `hWalkEnd`, whose epoch is pinned by construction. New portals carry
-        // snapshotAt = effTs, so the ageing loop above — which ran FIRST, and must
-        // keep running first — would leave them untouched even if it saw them.
-        // Only when the world actually advanced, exactly as the contract does:
-        // repeated calls at one moment must not spend the accrued debt.
-        if (hWalkEnd > windowStart) {
-            spawns.push(
-                ...spawn(g, portals, c, types, oldWord, newWord, storedCoveredEpochs, trunc(hWalkEnd, 32), effTs),
-            );
-        }
-    }
+    ageAll(g, portals, c, types, w.sph, hFreeze, effTs);
 
     return { game: g, portals, events, spawns, cappedShort };
 }
 
 /**
- * Mirror of TimeLib._fillHour: the smallest hour count `hh` in
- * `[0, hNow - windowStart]` for which `debt0 + spawnPressure(windowStart,
- * windowStart + hh) >= needed`, returned as the ABSOLUTE game hour
- * `windowStart + hh`.
- *
- * `hNow - windowStart` is a uint256 subtraction in the contract, so a call with a
- * `lastTickAt` AHEAD of `nowTs` panics here rather than searching a bogus range —
- * `subChecked` reproduces that. A real game never gets there; a caller holding a
- * stale timestamp can.
- *
- * The 64-iteration cap is the contract's own guard and is mirrored verbatim. With
- * hours in a uint32 the loop converges in at most 32 steps, so the cap NEVER
- * binds and never shapes the result — it is reproduced because it is there, not
- * because it does anything.
+ * Mirror of TimeLib._walk: collapses and births in chronological order until the
+ * window is exhausted, the run dies, or the fuse blows. Returns true when the
+ * fuse stopped it.
  */
-function fillHour(windowStart: bigint, hNow: bigint, debt0: bigint, needed: bigint, c: Config): bigint {
-    let lo = 0n;
-    let hi = subChecked(hNow, windowStart);
-    for (let it = 0; it < 64 && lo < hi; it++) {
-        const mid = (lo + hi) / 2n;
-        if (debt0 + spawnPressure(windowStart, windowStart + mid, c) >= needed) {
-            hi = mid;
-        } else {
-            lo = mid + 1n;
+function walk(
+    g: Game,
+    portals: Portal[],
+    colHour: bigint[],
+    w: Walk,
+    c: Config,
+    types: readonly PortalTypeParams[],
+    events: Collapse[],
+    spawns: Spawn[],
+): boolean {
+    for (;;) {
+        const ch = w.colNext;
+        let bh = NONE;
+        if (w.nextMature !== NONE && w.openCount < MAX_OPEN_PORTALS) {
+            bh = w.nextMature > w.cursor ? w.nextMature : w.cursor;
         }
+        // At an equal hour the collapse goes first (`ch <= bh`).
+        const isCollapse = ch <= w.hEnd && ch <= bh;
+        if (!isCollapse && bh > w.hEnd) return false; // nothing more inside the window
+        if (w.nEv === MAX_CATCHUP_EVENTS) return true;
+        advance(g, w, c, isCollapse ? ch : bh);
+        if (w.died) return false;
+        if (isCollapse) {
+            collapse(g, portals, colHour, w, c, types, events, w.colSlot, ch);
+            if (w.died) return false;
+        } else {
+            birth(g, portals, colHour, w, c, types, spawns, bh);
+            w.nextMature = matureHour(w, c, w.nextMature);
+        }
+        w.nEv += 1n;
     }
-    return windowStart + lo;
+}
+
+/** Mirror of TimeLib._available: `A(h) = debt0 + spawnPressure(h0, h)`, not saturated. */
+function available(w: Walk, c: Config, h: bigint): bigint {
+    return w.debt0 + spawnPressure(w.h0, h, c);
 }
 
 /**
- * Mirror of TimeLib._spawn: create up to
- * `min(spawnDebt / spawnCostUnits, maxSpawnsPerTx)` portals into the first free
- * slots, spending `spawnCostUnits` of pressure each, and return the spawn records.
+ * Mirror of TimeLib._firstHour: the smallest hour `h` in `[lo, hi]` with
+ * `have + spawnPressure(from, h) >= target`. The caller guarantees the predicate
+ * holds at `hi`.
  *
- * The MOMENT a portal appears is deterministic; only its CONTENTS are random, and
- * they derive from the portal's EPOCH SEED — `epochSeed(wordFor(epoch), epoch)`
- * with `epoch = spawnedAtHour / epochHours` — not from a per-game counter. The
- * player cannot pre-compute the word of a future epoch, so they cannot schedule a
- * run beyond the current one. `rngNonce` is still bumped per portal: it no longer
+ * No per-hour scan: the estimate `lo + ceil(shortfall / r)` caps `hi`, one
+ * evaluation at `hi - 1` confirms it, otherwise a binary search capped at 64
+ * iterations finishes — all exactly as the contract does it.
+ */
+function firstHour(from: bigint, lo: bigint, hi: bigint, have: bigint, target: bigint, c: Config): bigint {
+    const atLo = have + spawnPressure(from, lo, c);
+    if (atLo >= target) return lo;
+    const r = c.basePressurePerHour + c.pressureRampPerHour * lo;
+    if (r > 0n) {
+        const cap = lo + (target - atLo + r - 1n) / r;
+        if (cap < hi) hi = cap;
+    }
+    // Invariant: the predicate fails at lo and holds at hi.
+    if (subChecked(hi, lo) > 1n && have + spawnPressure(from, hi - 1n, c) < target) return hi;
+    for (let it = 0; it < 64 && subChecked(hi, lo) > 1n; it++) {
+        const mid = (lo + hi) / 2n;
+        if (have + spawnPressure(from, mid, c) >= target) {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    return hi;
+}
+
+/**
+ * Mirror of TimeLib._matureHour: the smallest hour with `A(h) >= (births + 1) *
+ * spawnCostUnits`, or NONE if it does not mature by `hEnd`.
+ */
+function matureHour(w: Walk, c: Config, from: bigint): bigint {
+    const target = (w.births + 1n) * c.spawnCostUnits;
+    if (w.aEnd < target) return NONE;
+    return firstHour(w.h0, from, w.hEnd, w.debt0, target, c);
+}
+
+/**
+ * Mirror of TimeLib._findNextCollapse: the earliest collapse among the occupied
+ * slots into `colSlot` / `colNext`; ties go to the lower slot. NONE when every
+ * slot is empty.
+ */
+function findNextCollapse(colHour: readonly bigint[], w: Walk): void {
+    let hour = NONE;
+    let slot = 0n;
+    for (let i = 0; i < colHour.length; i++) {
+        if (colHour[i] < hour) {
+            hour = colHour[i];
+            slot = BigInt(i);
+        }
+    }
+    w.colSlot = slot;
+    w.colNext = hour;
+}
+
+/**
+ * Mirror of TimeLib._advance: live the segment `cursor -> to` — power regen plus
+ * the open portals' yield (capped at powerMax), and the overflow drain while
+ * exactly twelve are open, with death inside the segment.
+ */
+function advance(g: Game, w: Walk, c: Config, to: bigint): void {
+    if (to <= w.cursor) return;
+    const delta = to - w.cursor;
+
+    const np = g.power + (c.powerRegenPerHour + w.yieldSum) * delta;
+    g.power = np > c.powerMax ? c.powerMax : trunc(np, 16);
+
+    if (w.openCount === MAX_OPEN_PORTALS && c.hpOverflowPerHour > 0n) {
+        const ov = c.hpOverflowPerHour;
+        const hToDeath = (g.hp + ov - 1n) / ov; // ceil(hp / ov)
+        if (hToDeath <= delta) {
+            w.died = true;
+            w.deathHour = w.cursor + hToDeath;
+            w.cursor = w.deathHour;
+            g.hp = 0n;
+            return;
+        }
+        // hToDeath > delta => ov*delta < hp, so no underflow.
+        g.hp = trunc(g.hp - ov * delta, 16);
+    }
+    w.cursor = to;
+}
+
+/** Mirror of TimeLib._collapse: collapse the portal in slot `s` at hour `ch`. */
+function collapse(
+    g: Game,
+    portals: Portal[],
+    colHour: bigint[],
+    w: Walk,
+    c: Config,
+    types: readonly PortalTypeParams[],
+    events: Collapse[],
+    s: bigint,
+    ch: bigint,
+): void {
+    const p = portals[Number(s)];
+    // Read all needed fields BEFORE blanking the slot.
+    let deaths = p.creaturesKnown ? p.creatures : (p.creaturesLo + p.creaturesHi) / 2n;
+    if (p.observerInside) deaths += 1n;
+    if (p.rescuerInside) deaths += 1n;
+
+    // An empty collapse still costs hpEmptyCollapse — it is the keeper's failure,
+    // unlike closing an empty portal (free, §4.4).
+    const hpLost = deaths > 0n ? c.hpCollapseBase + c.hpCollapsePerDeath * deaths : c.hpEmptyCollapse;
+    const hpBefore = g.hp;
+    const actualLost = hpBefore > hpLost ? hpLost : hpBefore; // min(loss, hp before the hit)
+
+    // `deaths` truncates to uint8 in the event while the HP charge is for all of
+    // them: two different numbers, deliberately.
+    events.push({
+        slot: s,
+        deaths: trunc(deaths, 8),
+        hpLost: trunc(actualLost, 16),
+        atHour: trunc(ch, 32),
+    });
+    g.hp = trunc(hpBefore - actualLost, 16);
+
+    // Crew inside dies and does NOT return to the pool (§4.3). The slot is freed:
+    // a fresh zeroed portal (status == Empty).
+    w.yieldSum = subChecked(w.yieldSum, types[p.portalType].powerYieldPerHour);
+    portals[Number(s)] = emptyPortal();
+    colHour[Number(s)] = NONE;
+    w.openCount = subChecked(w.openCount, 1n);
+    findNextCollapse(colHour, w);
+
+    if (g.hp === 0n) {
+        w.died = true;
+        w.deathHour = ch;
+    }
+}
+
+/**
+ * Mirror of TimeLib._birth: birth of one portal at hour `b` into the first free
+ * slot. The moment is deterministic; only the CONTENTS are random, drawn from the
+ * seed of the birth hour's epoch, `epochSeed(wordFor(epoch), epoch)` with
+ * `epoch = b / epochHours`. `rngNonce` is still bumped per portal: it no longer
  * feeds the spawn draw, but the bump keeps the nonce stream the blind-rescue path
  * reads unchanged.
- *
- * `g` and `portals` are WRITTEN THROUGH, as the Solidity writes through its
- * memory arguments — see the note on argument mutation in the file header. Both
- * are `catchUp`'s own copies.
  */
-function spawn(
+function birth(
+    g: Game,
+    portals: Portal[],
+    colHour: bigint[],
+    w: Walk,
+    c: Config,
+    types: readonly PortalTypeParams[],
+    spawns: Spawn[],
+    b: bigint,
+): void {
+    let slot = 0;
+    while (portals[slot].status !== PortalStatus.Empty) slot++; // a slot is free: openCount < 12
+
+    const epoch = b / c.epochHours;
+    if (epoch !== w.seedEpoch) {
+        w.seed = epochSeed(wordFor(epoch, w.oldWord, w.newWord, w.split), epoch);
+        w.seedEpoch = epoch;
+    }
+
+    g.rngNonce = addChecked(g.rngNonce, 1n, 32); // vestigial for spawns; preserves the nonce stream
+    g.spawnCount = addChecked(g.spawnCount, 1n, 32);
+    const spawnId = g.spawnCount; // discriminator: unique per spawn within the epoch
+
+    const portalType = Number(spawnDraw(w.seed, spawnId, SALT_TYPE) % 5n) as PortalType;
+    const tp = types[portalType];
+
+    // Exact, always-public collapse time inside the type's range.
+    const span = subChecked(tp.hoursMax, tp.hoursMin) + 1n;
+    const htc = trunc(tp.hoursMin + (spawnDraw(w.seed, spawnId, SALT_HOURS) % span), 16);
+    const nameIndex = trunc(spawnDraw(w.seed, spawnId, SALT_NAME) % NAME_POOL_SIZE, 8);
+
+    // Built FRESH from zeros, never copied from another portal: `surveyed`,
+    // `surveyPending`, the crew flags and the exact values all stay at their
+    // defaults, so the portal is unsurveyed and empty of people.
+    const np = emptyPortal();
+    np.id = trunc(spawnId, 16);
+    np.portalType = portalType;
+    np.nameIndex = nameIndex;
+    np.narrowedOnce = false;
+    np.status = PortalStatus.Open;
+    np.hoursToCollapse = htc;
+    np.spawnedAtHour = trunc(b, 32);
+    np.snapshotAt = trunc(g.startedAt + b * w.sph, 40);
+    np.energyLo = tp.energyMin;
+    np.energyHi = tp.energyMax;
+    np.stabilityLo = tp.stabilityMin;
+    np.stabilityHi = tp.stabilityMax;
+    np.creaturesLo = tp.creaturesMin;
+    np.creaturesHi = tp.creaturesMax;
+    portals[slot] = np;
+
+    const ch = b + htc;
+    colHour[slot] = ch;
+    if (ch < w.colNext || (ch === w.colNext && BigInt(slot) < w.colSlot)) {
+        w.colSlot = BigInt(slot);
+        w.colNext = ch;
+    }
+    w.openCount += 1n;
+    w.yieldSum += tp.powerYieldPerHour;
+    w.births += 1n;
+
+    spawns.push({ slot: BigInt(slot), portalType, nameIndex, atHour: trunc(b, 32) });
+}
+
+/**
+ * Mirror of TimeLib._ageAll: age every open portal to hour `hTo` and re-snapshot
+ * it at `stampTs` (whose game hour is `hTo`): `e = hTo - h(snapshotAt)`. Ageing
+ * composes, which is what keeps a split catch-up equal to a single one.
+ */
+function ageAll(
     g: Game,
     portals: Portal[],
     c: Config,
     types: readonly PortalTypeParams[],
-    oldWord: bigint,
-    newWord: bigint,
-    storedCoveredEpochs: bigint,
-    spawnedAtHour: bigint,
-    nowTs: bigint,
-): Spawn[] {
-    const out: Spawn[] = [];
-
-    const cost = c.spawnCostUnits;
-    if (cost === 0n) return out; // configuration guards cost > 0
-    const affordable = g.spawnDebt / cost;
-    const budget = affordable < c.maxSpawnsPerTx ? affordable : c.maxSpawnsPerTx;
-
-    // Seed for this spawn hour's epoch, pinned by the old/new word split.
-    const epoch = spawnedAtHour / c.epochHours;
-    const seed = epochSeed(wordFor(epoch, oldWord, newWord, storedCoveredEpochs), epoch);
-
-    for (let i = 0; i < Number(MAX_OPEN_PORTALS) && BigInt(out.length) < budget; i++) {
-        if (portals[i].status !== PortalStatus.Empty) continue;
-
-        g.rngNonce = addChecked(g.rngNonce, 1n, 32); // vestigial for spawns; preserves the nonce stream
-        g.spawnCount = addChecked(g.spawnCount, 1n, 32);
-        const spawnId = g.spawnCount; // discriminator: unique per spawn within the epoch
-
-        const portalType = Number(spawnDraw(seed, spawnId, SALT_TYPE) % 5n) as PortalType;
-        const tp = types[portalType];
-
-        // Exact, always-public collapse time inside the type's range.
-        const span = subChecked(tp.hoursMax, tp.hoursMin) + 1n;
-        const htc = trunc(tp.hoursMin + (spawnDraw(seed, spawnId, SALT_HOURS) % span), 16);
-        const nameIndex = trunc(spawnDraw(seed, spawnId, SALT_NAME) % NAME_POOL_SIZE, 16);
-
-        // Built FRESH from zeros, never copied from another portal: `surveyed`,
-        // `surveyPending`, the crew flags and the exact values all stay at their
-        // defaults, so the portal is unsurveyed and empty of people.
-        const np = emptyPortal();
-        np.id = trunc(spawnId, 16);
-        np.portalType = portalType;
-        np.nameIndex = nameIndex;
-        np.status = PortalStatus.Open;
-        np.hoursToCollapse = htc;
-        np.spawnedAtHour = spawnedAtHour;
-        np.snapshotAt = nowTs;
-        np.energyLo = tp.energyMin;
-        np.energyHi = tp.energyMax;
-        np.stabilityLo = tp.stabilityMin;
-        np.stabilityHi = tp.stabilityMax;
-        np.creaturesLo = tp.creaturesMin;
-        np.creaturesHi = tp.creaturesMax;
-        portals[i] = np;
-
-        g.openPortals = addChecked(g.openPortals, 1n, 8);
-        g.spawnDebt = subChecked(g.spawnDebt, cost); // budget <= debt/cost, so this cannot underflow
-
-        out.push({ slot: BigInt(i), portalType, nameIndex, atHour: spawnedAtHour });
+    sph: bigint,
+    hTo: bigint,
+    stampTs: bigint,
+): void {
+    for (let i = 0; i < Number(MAX_OPEN_PORTALS); i++) {
+        const p = portals[i];
+        if (p.status === PortalStatus.Empty) continue;
+        const hSnap = subChecked(p.snapshotAt, g.startedAt) / sph;
+        const e = subChecked(hTo, hSnap); // survivors have hoursToCollapse >= e
+        if (p.surveyed) {
+            const deg = types[p.portalType].degradePerHour * e;
+            p.stability = p.stability > deg ? trunc(p.stability - deg, 8) : 0n;
+        } else {
+            // Unsurveyed: knowledge decays — the energy and stability ranges drift
+            // outward by rangeWidenPerHour on each bound per game hour. The
+            // CREATURES range is deliberately left untouched.
+            const widen = c.rangeWidenPerHour * e;
+            p.energyLo = p.energyLo > widen ? trunc(p.energyLo - widen, 8) : 0n;
+            const eHi = p.energyHi + widen;
+            p.energyHi = eHi > 100n ? 100n : trunc(eHi, 8);
+            p.stabilityLo = p.stabilityLo > widen ? trunc(p.stabilityLo - widen, 8) : 0n;
+            const sHi = p.stabilityHi + widen;
+            p.stabilityHi = sHi > 100n ? 100n : trunc(sHi, 8);
+        }
+        p.hoursToCollapse = p.hoursToCollapse > e ? trunc(p.hoursToCollapse - e, 16) : 0n;
+        p.snapshotAt = stampTs;
     }
-
-    return out;
 }

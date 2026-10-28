@@ -588,7 +588,7 @@ contract GenRulesVectors is Script {
         uint256 x = _r(i, "portal");
         p.id = uint16((x >> 0) % 5000);
         p.portalType = PortalType((x >> 16) % 5);
-        p.nameIndex = uint16((x >> 24) % 24);
+        p.nameIndex = uint8((x >> 24) % 24);
         p.status = ((x >> 40) & 0xff) < 43 ? PortalStatus.Empty : ((x >> 48) % 2 == 0 ? PortalStatus.Open : PortalStatus.Questioned);
         p.surveyed = (x >> 56) % 2 == 0;
         p.observerInside = (x >> 60) % 4 == 0;

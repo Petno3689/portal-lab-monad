@@ -4,6 +4,7 @@ import { MONAD_CHAIN_ID, MONAD_RPC_URL } from './config';
 import { publicClient, readPlayer, readPending, readFee, readCanAct, readBestRun, readDeferredOutcome, blockOf, sendTx, revertOf, type ChainState } from './contract';
 import { preview } from '@shared/preview';
 import { catchUp } from '@shared/time';
+import { fallsNoLaterThan } from './edgeBound';
 import { Action, getRefusalMessage, getCancelReasonMessage, portalTypeNames } from './types';
 import { Journal } from './Journal';
 import { Leaderboard } from './Leaderboard';
@@ -329,12 +330,25 @@ function App() {
           portalType: sp.portalType,
         }));
       const fallsAt = r.game.finished && r.game.diedAtHour <= lastHour ? r.game.diedAtHour : null;
-      return { spawns, edgeHour: lastHour, fallsAt };
+      const boundAfterEdge = fallsAt === null ? fallsNoLaterThan(r.game, r.portals, state.config) : null;
+      return { spawns, edgeHour: lastHour, fallsAt, boundAfterEdge };
     } catch (error) {
       console.error('Forecast failed:', error);
       return null;
     }
   }, [state, projected, now]);
+
+  const secondsUntilHour = (hour: bigint): bigint => {
+    const s = (game?.startedAt ?? 0n) + hour * (state?.config.secPerHour ?? 0n) - now;
+    return s > 0n ? s : 0n;
+  };
+  // Latest fall hour while the world is held at the edge of its random word.
+  const pausedBound =
+    state && projected && projected.cappedShort && !projected.game.finished && !state.pending.active
+      ? fallsNoLaterThan(projected.game, projected.portals, state.config)
+      : null;
+  const wallHour =
+    game && state && state.config.secPerHour > 0n ? (now - game.startedAt) / state.config.secPerHour : 0n;
 
   return (
     <div className="app">
@@ -437,6 +451,17 @@ function App() {
             <div className="info-message">
               The world is paused at hour {String(game.hoursElapsed)}. It needs a fresh random epoch word;
               any action will fetch one (Pyth fee).
+              {pausedBound !== null &&
+                (wallHour < pausedBound ? (
+                  <p className="forecast-death">
+                    Without a new word the lab falls no later than hour {String(pausedBound)} (in{' '}
+                    {String(secondsUntilHour(pausedBound))} s).
+                  </p>
+                ) : (
+                  <p className="forecast-death">
+                    The lab has fallen by hour {String(pausedBound)} at the latest. Sync (pays for word) to record the run.
+                  </p>
+                ))}
             </div>
           )}
 
@@ -567,6 +592,13 @@ function App() {
                 </ul>
               )}
               {forecast.edgeHour !== null && <p>The current random word covers up to hour {String(forecast.edgeHour)}.</p>}
+              {forecast.boundAfterEdge !== null && (
+                <p className="forecast-death">
+                  Without a new random word after hour {String(forecast.edgeHour)}, the lab falls no later than hour{' '}
+                  {String(forecast.boundAfterEdge)} (in{' '}
+                  {String(secondsUntilHour(forecast.boundAfterEdge))} s).
+                </p>
+              )}
             </div>
           )}
 

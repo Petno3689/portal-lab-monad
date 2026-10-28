@@ -127,7 +127,7 @@ export function Journal({ player, state }: Props) {
           });
           if (currentKey.current !== key) return;
           const start = startLog as LabEvent | null;
-          const mine = start ? found.filter((e) => !before(e, start)) : found;
+          const mine = start ? found.filter((e) => before(e, start) >= 0) : found;
           readTo.current = { key, block: head };
           setEvents(mine);
           setTruncated(!stopped);

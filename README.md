@@ -33,7 +33,7 @@ What changed since:
 
 - Portals are born at the hour their spawn pressure matures.
 - A Deaf portal's second survey reads exact values.
-- `cancelDeferred` timeouts (`requestTimeoutHours`, `outsiderTimeoutHours`).
+- A stuck randomness request can be cancelled by its player after 15 s, by anyone else after 10 min.
 - `epochHours` is 36.
 - The leaderboard is on chain.
 - Rebalance: `hpStart` 80, `hpCollapsePerDeath` 8, `pressureRampPerHour` 2.

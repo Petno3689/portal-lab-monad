@@ -13,7 +13,7 @@
 
 - Foundry (Windows: `.tools\foundry-win\forge.exe` и `cast.exe`, Linux: `.tools/foundry/forge` и `cast`)
 - Тестовые монеты Monad: [faucet.monad.xyz](https://faucet.monad.xyz)
-- Деплой стоил 1,285 MON (13 октября 2026); оценка `forge` покажет примерно
+- Деплой стоил 1,285 MON (13 октября 2026) и 1,334 MON (28 октября 2026); оценка `forge` покажет примерно
   вдвое больше, потому что считает по максимальной цене газа.
 
 **Ключ НИКОГДА не попадает в репозиторий и НИКОГДА не передаётся ревьюеру.
@@ -83,6 +83,9 @@ Linux: то же с `../../.tools/foundry/forge`.
 
 Команды, которые сработали 14 октября 2026. Сначала верифицировать **малый**
 контракт.
+
+28 октября 2026 сервер Sourcify у BlockVision не работал (HTTP 500): повторить
+позже или использовать Monadscan.
 
 Параметры верификатора: `--verifier sourcify --verifier-url
 https://sourcify-api-monad.blockvision.org/`.

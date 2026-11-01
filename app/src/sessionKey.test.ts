@@ -6,11 +6,15 @@ import {
   checkBurner,
   clearSessionKey,
   deriveSessionKey,
+  getAutoSettle,
+  getAutoWord,
   getGasMultiplierPct,
   loadSessionKey,
   rememberBurner,
   rememberedBurner,
   saveSessionKey,
+  setAutoSettle,
+  setAutoWord,
   setGasMultiplierPct,
   type StorageLike,
 } from './sessionKey';
@@ -159,5 +163,36 @@ describe('gas multiplier', () => {
     expect(getGasMultiplierPct(storage, BURNER_A)).toBe(120);
     storage.map.set(`portal-lab:gas-multiplier-pct:${BURNER_A.toLowerCase()}`, 'lots');
     expect(getGasMultiplierPct(storage, BURNER_A)).toBe(120);
+  });
+});
+
+describe.each([
+  ['auto-word', getAutoWord, setAutoWord],
+  ['auto-settle', getAutoSettle, setAutoSettle],
+])('%s setting', (name, get, set) => {
+  it('defaults to true', () => {
+    expect(get(memoryStorage(), BURNER_A)).toBe(true);
+    expect(get(null, BURNER_A)).toBe(true);
+    expect(get(deniedStorage, BURNER_A)).toBe(true);
+  });
+
+  it('persists per burner under the lowercase address', () => {
+    const storage = memoryStorage();
+    set(storage, BURNER_A, false);
+    expect(get(storage, BURNER_A)).toBe(false);
+    expect(get(storage, BURNER_B)).toBe(true);
+    expect(storage.map.get(`portal-lab:${name}:${BURNER_A.toLowerCase()}`)).toBe('false');
+    set(storage, BURNER_A, true);
+    expect(get(storage, BURNER_A)).toBe(true);
+  });
+
+  it('falls back to true on garbage', () => {
+    const storage = memoryStorage();
+    storage.map.set(`portal-lab:${name}:${BURNER_A.toLowerCase()}`, 'maybe');
+    expect(get(storage, BURNER_A)).toBe(true);
+  });
+
+  it('does not throw when storage is denied', () => {
+    expect(() => set(deniedStorage, BURNER_A, false)).not.toThrow();
   });
 });

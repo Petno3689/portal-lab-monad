@@ -2,13 +2,17 @@ import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { formatEther, isAddress, toHex, type Address, type Hex } from 'viem';
 import { privateKeyToAccount, type PrivateKeyAccount } from 'viem/accounts';
 import { MONAD_CHAIN_ID, MONAD_RPC_URL } from './config';
-import { publicClient, readPlayer, readPending, readFee, readCanAct, readBestRun, readDeferredOutcome, readGasPrice, sendTx, topUp, withdraw, revertOf, isInsufficientFunds, TxReverted, type ChainState } from './contract';
+import { publicClient, readPlayer, readPending, readPreview, readFee, readCanAct, readBestRun, readDeferredOutcome, readGasPrice, sendTx, topUp, withdraw, revertOf, isInsufficientFunds, TxReverted, type ChainState } from './contract';
 import {
   SESSION_MESSAGE,
   checkBurner,
   clearSessionKey,
   deriveSessionKey,
+  getAutoSettle,
+  getAutoWord,
   getGasMultiplierPct,
+  setAutoSettle,
+  setAutoWord,
   setGasMultiplierPct,
   loadSessionKey,
   rememberBurner,
@@ -18,6 +22,7 @@ import {
 } from './sessionKey';
 import { createTxQueue } from './txQueue';
 import { canPayWord, parseTopUp, withdrawAmount, wordCost } from './funds';
+import { createBackoff, isExpectedRevert, shouldAutoBuyWord, shouldAutoSettle, type Backoff } from './autopilot';
 import { preview } from '@shared/preview';
 import { catchUp } from '@shared/time';
 import { fallsNoLaterThan } from './edgeBound';
@@ -51,6 +56,37 @@ interface RetryCall {
   value: bigint;
   doneMessage?: string;
 }
+
+/** How a `send` ended: `error` if it failed, neither if it never started or its key was dropped. */
+interface SendResult {
+  sent: boolean;
+  error?: unknown;
+}
+
+const AUTO = {
+  word: { label: 'Random word (auto)', fn: 'sync', stopName: 'word purchase' },
+  settle: { label: 'Record run (auto)', fn: 'settle', stopName: 'run recording' },
+} as const;
+type AutoKind = keyof typeof AUTO;
+
+const AUTO_MAX_FAILURES = 3;
+const AUTO_COOLDOWN_MS = 30_000;
+// Spacing of the readPreview check while idle, and the pause after an automatic transaction
+// so that a read lagging behind it cannot trigger a second one.
+const AUTO_HOLD_MS = 10_000;
+
+/** One automation's failures and next allowed try; `generation` changes on reset and disowns a run in flight. */
+interface AutoTrack {
+  backoff: Backoff;
+  blockedUntil: number;
+  generation: number;
+}
+
+const newAutoTrack = (): AutoTrack => ({
+  backoff: createBackoff({ cooldownMs: AUTO_COOLDOWN_MS, maxFailures: AUTO_MAX_FAILURES }),
+  blockedUntil: 0,
+  generation: 0,
+});
 
 const PENDING_POLL_MS = 3000;
 const BALANCE_POLL_MS = 10_000;
@@ -162,6 +198,18 @@ function App() {
   const [topUpInput, setTopUpInput] = useState('3');
   const [confirmWithdraw, setConfirmWithdraw] = useState(false);
   const [gasPct, setGasPct] = useState(120);
+  const [autoWord, setAutoWordOn] = useState(true);
+  const [autoSettle, setAutoSettleOn] = useState(true);
+  // Automatic actions report here, so that they never replace what `txStatus` shows the player.
+  const [autoStatus, setAutoStatus] = useState('');
+  const [autoStopped, setAutoStopped] = useState<Partial<Record<AutoKind, string>>>({});
+  const autoTracks = useRef<Record<AutoKind, AutoTrack>>({ word: newAutoTrack(), settle: newAutoTrack() });
+  const autoInFlight = useRef(false);
+  // Clicks being prepared (reads before `send`): automation stands aside so that it cannot
+  // take the busy flag from under them, which would drop the click.
+  const playerTurn = useRef(0);
+  // Whether the state was already re-read for the current disagreement with the contract about the edge.
+  const edgeResynced = useRef(false);
   const [unlocking, setUnlocking] = useState(false);
   // A derived key that differs from the one remembered: not in use until the player accepts it.
   const [mismatch, setMismatch] = useState<{ expected: string; key: Hex; address: Address } | null>(null);
@@ -176,6 +224,8 @@ function App() {
   const awaited = useRef<Pending | null>(null);
   // Block of the transaction that committed the deferral: where to start looking for its outcome events.
   const awaitedBlock = useRef<bigint | null>(null);
+  // Whether that deferred action was automatic: its result goes to `autoStatus`.
+  const awaitedAuto = useRef(false);
   // State as of the moment the deferral was observed, to tell a fresh game's first word from a plain sync.
   const stateRef = useRef<ChainState | null>(null);
   stateRef.current = state;
@@ -190,6 +240,14 @@ function App() {
 
   const player = burner?.address ?? urlPlayer;
 
+  const resetAuto = useCallback((kind: AutoKind) => {
+    const track = autoTracks.current[kind];
+    track.backoff.reset();
+    track.blockedUntil = 0;
+    track.generation += 1;
+    setAutoStopped((s) => ({ ...s, [kind]: undefined }));
+  }, []);
+
   const adoptBurner = useCallback((next: PrivateKeyAccount | null) => {
     if (next?.address === burnerRef.current?.address) return;
     burnerRef.current = next;
@@ -200,6 +258,12 @@ function App() {
     setPrices(null);
     setConfirmWithdraw(false);
     setGasPct(next ? getGasMultiplierPct(browserStorage('localStorage'), next.address) : 120);
+    setAutoWordOn(next ? getAutoWord(browserStorage('localStorage'), next.address) : true);
+    setAutoSettleOn(next ? getAutoSettle(browserStorage('localStorage'), next.address) : true);
+    resetAuto('word');
+    resetAuto('settle');
+    setAutoStatus('');
+    edgeResynced.current = false;
     setState(null);
     setBestRun(null);
     setConfirmNew(false);
@@ -207,7 +271,8 @@ function App() {
     setTxStatus({ pending: false, message: '' });
     awaited.current = null;
     awaitedBlock.current = null;
-  }, []);
+    awaitedAuto.current = false;
+  }, [resetAuto]);
 
   const adoptOwner = useCallback((next: Address | null) => {
     if (next?.toLowerCase() === ownerRef.current?.toLowerCase()) return;
@@ -367,6 +432,19 @@ function App() {
     load();
   }, [load]);
 
+  // A quiet re-read for automation: says nothing to the player, and yields to a transaction
+  // in progress, which reads the state itself.
+  const rereadState = useCallback(async (p: Address) => {
+    try {
+      const fresh = await readPlayer(p);
+      if (burnerRef.current?.address !== p || busyRef.current) return;
+      setState(fresh);
+      setNow(nowSec());
+    } catch (error) {
+      console.error('Failed to re-read game state:', error);
+    }
+  }, []);
+
   // Fee and gas price change slowly: re-read them at most once a minute.
   const pricesRead = useRef<{ at: number; fee: bigint; gasPrice: bigint } | null>(null);
   const refreshBalance = useCallback(async (address: Address) => {
@@ -429,11 +507,14 @@ function App() {
         setNow(nowSec());
         const done = awaited.current;
         const fromBlock = awaitedBlock.current;
+        const auto = awaitedAuto.current;
         awaited.current = null;
         awaitedBlock.current = null;
+        awaitedAuto.current = false;
         const message = await resultMessage(done, fresh, stateRef.current, player, fromBlock, seenAt);
         if (cancelled()) return;
-        setTxStatus({ pending: false, message });
+        if (auto) setAutoStatus(`${message} (auto)`);
+        else setTxStatus({ pending: false, message });
       } catch (error) {
         console.error('Pending poll failed:', error);
       }
@@ -451,15 +532,21 @@ function App() {
     value = 0n,
     doneMessage?: string,
     retryGasPct?: number,
-  ) => {
+    auto = false,
+  ): Promise<SendResult> => {
     const key = burner;
-    if (!key || busyRef.current) return;
+    if (!key || busyRef.current || (auto && playerTurn.current > 0)) return { sent: false };
     busyRef.current = true;
     setBusy(true);
     const dropped = () => burnerRef.current !== key;
-    setConfirmNew(false);
-    setRetry(null);
-    setTxStatus({ pending: true, message: label });
+    const report = (pending: boolean, message: string) =>
+      auto ? setAutoStatus(message) : setTxStatus({ pending, message });
+    if (!auto) {
+      setConfirmNew(false);
+      setRetry(null);
+      setAutoStatus('');
+    }
+    report(true, label);
     try {
       const pct = retryGasPct ?? getGasMultiplierPct(browserStorage('localStorage'), key.address);
       const { hash, blockNumber } = await txQueue.enqueue(async () => {
@@ -467,24 +554,29 @@ function App() {
         if (dropped()) throw new Error('Game key is no longer active');
         return sendTx(key, fn, args, pct, value);
       });
-      if (dropped()) return;
+      if (dropped()) return { sent: false };
+      awaitedAuto.current = auto;
       const fresh = await readPlayer(key.address);
-      if (dropped()) return;
+      if (dropped()) return { sent: false };
       setState(fresh);
       setNow(nowSec());
       if (fn === 'settle' || fn === 'startGame') refreshBestRun(key.address);
       if (fresh.pending.active) {
         awaited.current = fresh.pending;
         awaitedBlock.current = blockNumber;
-        setTxStatus({ pending: true, message: `${label}: waiting for the random word from Pyth (tx ${hash.slice(0, 10)}…)` });
+        report(true, `${label}: waiting for the random word from Pyth (tx ${hash.slice(0, 10)}…)`);
       } else {
-        setTxStatus({ pending: false, message: doneMessage ?? `${label}: done (tx ${hash.slice(0, 10)}…)` });
+        report(false, doneMessage ?? `${label}: done (tx ${hash.slice(0, 10)}…)`);
       }
+      return { sent: true };
     } catch (error) {
-      if (dropped()) return;
+      if (dropped()) return { sent: false };
       console.error(error);
-      setTxStatus(describeError(error));
-      if (error instanceof TxReverted && retryGasPct === undefined) setRetry({ label, fn, args, value, doneMessage });
+      if (!auto) {
+        setTxStatus(describeError(error));
+        if (error instanceof TxReverted && retryGasPct === undefined) setRetry({ label, fn, args, value, doneMessage });
+      }
+      return { sent: false, error };
     } finally {
       busyRef.current = false;
       setBusy(false);
@@ -492,22 +584,36 @@ function App() {
     }
   };
 
+  const asPlayer = async (job: () => Promise<unknown>) => {
+    playerTurn.current += 1;
+    try {
+      await job();
+    } finally {
+      playerTurn.current -= 1;
+    }
+  };
+
+  const sendWithFee = (label: string, fn: 'startGame' | 'sync', args: readonly unknown[]) =>
+    asPlayer(async () => send(label, fn, args, await readFee()));
+
   const performAction = async (slot: number, action: Action) => {
     if (!burner || !state || busyRef.current) return;
     if (state.pending.active) {
       setTxStatus({ pending: true, message: 'Previous action is still waiting for the random word' });
       return;
     }
-    const refusal = await readCanAct(burner.address, slot, action);
-    if (refusal !== 0) {
-      setTxStatus({ pending: false, message: '', warn: getRefusalMessage(refusal) });
-      return;
-    }
-    // PortalLab.act refunds msg.value in full when no word was needed and refunds
-    // the excess when one was. Attaching the fee unconditionally removes the race
-    // between prediction and execution.
-    const value = await readFee();
-    await send(`Action ${Action[action]} on slot ${slot}`, 'act', [slot, action], value);
+    await asPlayer(async () => {
+      const refusal = await readCanAct(burner.address, slot, action);
+      if (refusal !== 0) {
+        setTxStatus({ pending: false, message: '', warn: getRefusalMessage(refusal) });
+        return;
+      }
+      // PortalLab.act refunds msg.value in full when no word was needed and refunds
+      // the excess when one was. Attaching the fee unconditionally removes the race
+      // between prediction and execution.
+      const value = await readFee();
+      await send(`Action ${Action[action]} on slot ${slot}`, 'act', [slot, action], value);
+    });
   };
 
   const cancelRequest = async (retryGasPct?: number) => {
@@ -516,12 +622,132 @@ function App() {
     cancelEpoch.current += 1;
     awaited.current = null;
     awaitedBlock.current = null;
+    awaitedAuto.current = false;
+    // The player has just given up on a word: give them time before buying another.
+    const wordTrack = autoTracks.current.word;
+    wordTrack.blockedUntil = Math.max(wordTrack.blockedUntil, Date.now() + AUTO_COOLDOWN_MS);
     try {
       await send('Cancel request', 'cancelDeferred', [burner.address], 0n, 'Request cancelled', retryGasPct);
     } finally {
       cancelling.current = false;
       cancelEpoch.current += 1;
     }
+  };
+
+  // Runs one automatic action and books its outcome. A reset meanwhile (toggle, new key) disowns it.
+  const runAuto = async (kind: AutoKind, job: (live: () => boolean) => Promise<SendResult>) => {
+    const { label, fn, stopName } = AUTO[kind];
+    const track = autoTracks.current[kind];
+    const { generation } = track;
+    const live = () => track.generation === generation;
+    autoInFlight.current = true;
+    let result: SendResult;
+    try {
+      result = await job(live);
+    } catch (error) {
+      result = { sent: false, error };
+    } finally {
+      autoInFlight.current = false;
+    }
+    if (!live()) {
+      if (result.error !== undefined) setAutoStatus('');
+      return;
+    }
+    if (result.sent) {
+      track.backoff.success();
+      track.blockedUntil = Date.now() + AUTO_HOLD_MS;
+      return;
+    }
+    if (result.error === undefined) return;
+    if (player) rereadState(player);
+    if (isExpectedRevert(fn, revertOf(result.error)?.name)) {
+      track.blockedUntil = Date.now() + AUTO_COOLDOWN_MS;
+      setAutoStatus(`${label}: not yet`);
+      return;
+    }
+    const { error, warn, message } = describeError(result.error);
+    const reason = error ?? warn ?? message;
+    const { blockedUntil, stopped } = track.backoff.failure(Date.now());
+    track.blockedUntil = stopped ? Infinity : blockedUntil;
+    if (stopped) {
+      setAutoStatus('');
+      setAutoStopped((s) => ({
+        ...s,
+        [kind]: `Automatic ${stopName} stopped after ${AUTO_MAX_FAILURES} failures: ${reason}. Use the buttons, or toggle it off and on to retry.`,
+      }));
+    } else {
+      setAutoStatus(`${label}: failed, trying again in ${AUTO_COOLDOWN_MS / 1000} s: ${reason}`);
+    }
+  };
+
+  const buyWordAuto = async (live: () => boolean): Promise<SendResult> => {
+    if (!player) return { sent: false };
+    const chain = await readPreview(player);
+    if (!live()) return { sent: false };
+    if (!chain.cappedShort || chain.finished) {
+      autoTracks.current.word.blockedUntil = Date.now() + AUTO_HOLD_MS;
+      // The local clock runs ahead, or the state on the page is behind: only the latter heals by reading.
+      if (!edgeResynced.current) {
+        edgeResynced.current = true;
+        rereadState(player);
+      }
+      return { sent: false };
+    }
+    const value = await readFee();
+    if (!live()) return { sent: false };
+    return send(AUTO.word.label, AUTO.word.fn, [player], value, undefined, undefined, true);
+  };
+
+  // No dependency list: this runs after every render, so at least on each tick of the 1 s
+  // clock, with the current `send`. Everything it does is guarded by the checks below.
+  useEffect(() => {
+    if (!state || !projected) return;
+    if (!projected.cappedShort) edgeResynced.current = false;
+    if (autoInFlight.current || playerTurn.current > 0) return;
+    const shared = {
+      hasBurner: burner !== null,
+      busy: busyRef.current,
+      gameStarted: state.game.startedAt !== 0n,
+      projectedFinished: projected.game.finished,
+      pendingActive: state.pending.active,
+      now: Date.now(),
+    };
+    const tracks = autoTracks.current;
+    if (
+      shouldAutoSettle({
+        ...shared,
+        enabled: autoSettle,
+        settled: state.game.settled,
+        blockedUntil: tracks.settle.blockedUntil,
+      })
+    ) {
+      runAuto('settle', () => send(AUTO.settle.label, AUTO.settle.fn, [player], 0n, undefined, undefined, true));
+    } else if (
+      shouldAutoBuyWord({
+        ...shared,
+        // The forfeit question is a choice about paying for this word: leave it to the player.
+        enabled: autoWord && !confirmNew,
+        chainFinished: state.game.finished,
+        projectedCapped: projected.cappedShort,
+        canPay: balance !== null && prices !== null && canPayWord(balance, prices.fee, prices.gasPrice),
+        blockedUntil: tracks.word.blockedUntil,
+      })
+    ) {
+      runAuto('word', buyWordAuto);
+    }
+  });
+
+  const toggleAuto = (kind: AutoKind, on: boolean) => {
+    if (!burner) return;
+    const local = browserStorage('localStorage');
+    if (kind === 'word') {
+      setAutoWordOn(on);
+      setAutoWord(local, burner.address, on);
+    } else {
+      setAutoSettleOn(on);
+      setAutoSettle(local, burner.address, on);
+    }
+    resetAuto(kind);
   };
 
   const retryWithMoreGas = async () => {
@@ -730,6 +956,16 @@ function App() {
             </label>
             <small>Monad charges the full gas limit; 120% has been enough in every measured transaction.</small>
           </div>
+          <div className="funds-row">
+            <label>
+              <input type="checkbox" checked={autoWord} onChange={(e) => toggleAuto('word', e.target.checked)} />{' '}
+              Buy random words automatically
+            </label>
+            <label>
+              <input type="checkbox" checked={autoSettle} onChange={(e) => toggleAuto('settle', e.target.checked)} />{' '}
+              Record finished runs automatically
+            </label>
+          </div>
         </div>
       )}
 
@@ -743,6 +979,8 @@ function App() {
         </div>
       )}
       {txStatus.error && <div className="error-message">{txStatus.error}</div>}
+      {autoStopped.word && <div className="error-message">{autoStopped.word}</div>}
+      {autoStopped.settle && <div className="error-message">{autoStopped.settle}</div>}
       {retry && (
         <div className="error-message">
           <button onClick={retryWithMoreGas} disabled={busy}>Retry with more gas</button>
@@ -750,6 +988,7 @@ function App() {
       )}
       {txStatus.warn && <div className="warn-message">{txStatus.warn}</div>}
       {txStatus.message && <div className="info-message">{txStatus.message}</div>}
+      {autoStatus && <div className="info-message">{autoStatus}</div>}
       {state?.pending.active && (
         <div className="info-message">
           Waiting for the random word from Pyth: action {Action[state.pending.action]} on slot {String(state.pending.slot)}
@@ -783,7 +1022,7 @@ function App() {
       ) : !hasGame || !projected || !game ? (
         <div className="no-game">
           <p>No active game. Start a new one!</p>
-          <button onClick={async () => send('New game', 'startGame', [], await readFee())} className="primary" disabled={!burner || busy}>
+          <button onClick={() => sendWithFee('New game', 'startGame', [])} className="primary" disabled={!burner || busy}>
             Start Game
           </button>
         </div>
@@ -984,14 +1223,7 @@ function App() {
           <div className="game-controls">
             <button onClick={load}>Refresh</button>
             {projected.cappedShort && !game.finished && !state?.pending.active && (
-              <button
-                onClick={async () => {
-                  if (!state) return;
-                  const value = state.pending.active ? 0n : await readFee();
-                  await send('Paid sync', 'sync', [player], value);
-                }}
-                disabled={!burner || busy}
-              >
+              <button onClick={() => sendWithFee('Paid sync', 'sync', [player])} disabled={!burner || busy}>
                 Sync (pays for word)
               </button>
             )}
@@ -1002,7 +1234,7 @@ function App() {
             )}
             <button
               onClick={async () => {
-                if (game.finished) await send('New game', 'startGame', [], await readFee());
+                if (game.finished) await sendWithFee('New game', 'startGame', []);
                 else setConfirmNew(true);
               }}
               className="secondary"
@@ -1019,14 +1251,20 @@ function App() {
               {projected.cappedShort && (
                 <p>
                   The world is paused at the edge of its random word, so the contract cannot tell yet whether this
-                  lab has already fallen. Use "Sync (pays for word)" first: if the run ended while you were away, it
-                  will be recorded.
+                  lab has already fallen. Buy a word first: if the run ended while you were away, it will be recorded.
                 </p>
+              )}
+              {projected.cappedShort && !state?.pending.active && (
+                <>
+                  <button onClick={() => sendWithFee('Paid sync', 'sync', [player])} className="primary" disabled={busy}>
+                    Buy a word and finish this run first
+                  </button>{' '}
+                </>
               )}
               <button
                 onClick={async () => {
                   setConfirmNew(false);
-                  await send('New game', 'startGame', [], await readFee());
+                  await sendWithFee('New game', 'startGame', []);
                 }}
                 className="danger"
                 disabled={busy}

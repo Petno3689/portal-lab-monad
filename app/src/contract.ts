@@ -151,6 +151,16 @@ export async function readFee(): Promise<bigint> {
   return publicClient.readContract({ address: source, abi: randomSourceAbi, functionName: 'fee' });
 }
 
+/** The contract's own view of `player`'s world at the latest block, for confirming the local projection. */
+export async function readPreview(player: Address): Promise<{ cappedShort: boolean; finished: boolean }> {
+  const [game, , cappedShort] = (await publicClient.readContract({
+    ...lab,
+    functionName: 'preview',
+    args: [player],
+  })) as unknown as [{ finished: boolean }, unknown, boolean];
+  return { cappedShort, finished: game.finished };
+}
+
 export async function readCanAct(player: Address, slot: number, action: number): Promise<number> {
   return Number(await publicClient.readContract({ ...lab, functionName: 'canAct', args: [player, slot, action] }));
 }

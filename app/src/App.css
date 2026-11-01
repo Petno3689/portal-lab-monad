@@ -390,3 +390,7 @@ button.danger:hover {
   width: 6rem;
   padding: 0.4rem;
 }
+
+.funds-row input[type='checkbox'] {
+  width: auto;
+}

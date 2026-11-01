@@ -15,6 +15,8 @@ export const SESSION_MESSAGE = [
 const sessionKeyKey = (owner: Address) => `portal-lab:session-key:${owner.toLowerCase()}`;
 const burnerOfKey = (owner: Address) => `portal-lab:burner-of:${owner.toLowerCase()}`;
 const gasMultiplierKey = (burner: Address) => `portal-lab:gas-multiplier-pct:${burner.toLowerCase()}`;
+const autoWordKey = (burner: Address) => `portal-lab:auto-word:${burner.toLowerCase()}`;
+const autoSettleKey = (burner: Address) => `portal-lab:auto-settle:${burner.toLowerCase()}`;
 
 const GAS_PCT_MIN = 100;
 const GAS_PCT_MAX = 200;
@@ -88,4 +90,23 @@ export function getGasMultiplierPct(storage: MaybeStorage, burner: Address): num
 
 export function setGasMultiplierPct(storage: MaybeStorage, burner: Address, pct: number) {
   write(storage, gasMultiplierKey(burner), String(Number.isFinite(pct) ? clampGasPct(pct) : GAS_PCT_DEFAULT));
+}
+
+// Automation is on unless the player has turned it off: anything but 'false' reads as on.
+const readAutoSetting = (storage: MaybeStorage, key: string) => read(storage, key) !== 'false';
+
+export function getAutoWord(storage: MaybeStorage, burner: Address): boolean {
+  return readAutoSetting(storage, autoWordKey(burner));
+}
+
+export function setAutoWord(storage: MaybeStorage, burner: Address, on: boolean) {
+  write(storage, autoWordKey(burner), String(on));
+}
+
+export function getAutoSettle(storage: MaybeStorage, burner: Address): boolean {
+  return readAutoSetting(storage, autoSettleKey(burner));
+}
+
+export function setAutoSettle(storage: MaybeStorage, burner: Address, on: boolean) {
+  write(storage, autoSettleKey(burner), String(on));
 }

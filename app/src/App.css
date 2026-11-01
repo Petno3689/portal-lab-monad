@@ -361,3 +361,32 @@ button.danger:hover {
 .leaderboard-own {
   margin-top: 0.5rem;
 }
+
+.funds-panel {
+  margin: 1rem;
+  padding: 1rem;
+  border: 1px solid #3a6aaa;
+  border-radius: 4px;
+}
+
+.funds-panel h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.1rem;
+}
+
+.funds-panel .warn-message {
+  margin: 0.5rem 0;
+}
+
+.funds-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin-top: 0.5rem;
+}
+
+.funds-row input {
+  width: 6rem;
+  padding: 0.4rem;
+}

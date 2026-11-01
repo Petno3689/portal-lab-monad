@@ -14,11 +14,13 @@ import {
   InsufficientFundsError,
   type Abi,
   type Address,
+  type Hex,
 } from 'viem';
 import type { PrivateKeyAccount } from 'viem/accounts';
 import { MONAD_RPC_URL, MONAD_CHAIN_ID, PORTAL_LAB_ADDRESS } from './config';
 import type { Portal, Game, Config, PortalTypeParams, Pending, BestRun } from '@shared/types';
 import ABI_JSON from './PortalLab.abi.json';
+import { withdrawAmount } from './funds';
 
 export const portalLabAbi = (ABI_JSON as { abi: Abi }).abi;
 
@@ -327,4 +329,41 @@ export async function readLeaderboard(): Promise<LeaderboardRow[]> {
     players.forEach((player, i) => rows.push({ player, run: toMirror<BestRun>(runs[i]) }));
   }
   return rows;
+}
+
+/** The current gas price, for pricing the next random word. */
+export function readGasPrice(): Promise<bigint> {
+  return publicClient.getGasPrice();
+}
+
+/** Send `value` from the owner's wallet (MetaMask) to the game key and wait for inclusion. */
+export async function topUp(owner: Address, burner: Address, value: bigint): Promise<{ hash: Hex; blockNumber: bigint }> {
+  const hash = (await window.ethereum.request({
+    method: 'eth_sendTransaction',
+    params: [{ from: owner, to: burner, value: toHex(value) }],
+  })) as Hex;
+  const receipt = await publicClient.waitForTransactionReceipt({ hash });
+  if (receipt.status === 'reverted') throw new TxReverted(hash, receipt.gasUsed, receipt.blockNumber);
+  return { hash, blockNumber: receipt.blockNumber };
+}
+
+/** Send the game key's whole balance, less the transfer's own gas, to `to`. */
+export async function withdraw(burner: PrivateKeyAccount, to: Address): Promise<{ hash: Hex; blockNumber: bigint }> {
+  const [balance, fees] = await Promise.all([
+    publicClient.getBalance({ address: burner.address }),
+    publicClient.estimateFeesPerGas(),
+  ]);
+  const value = withdrawAmount(balance, fees.maxFeePerGas);
+  if (value === 0n) throw new Error('Nothing to withdraw');
+  const gas = 21_000n;
+  const hash = await walletClient(burner).sendTransaction({
+    to,
+    value,
+    gas,
+    maxFeePerGas: fees.maxFeePerGas,
+    maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
+  });
+  const receipt = await publicClient.waitForTransactionReceipt({ hash });
+  if (receipt.status === 'reverted') throw new TxReverted(hash, gas, receipt.blockNumber);
+  return { hash, blockNumber: receipt.blockNumber };
 }

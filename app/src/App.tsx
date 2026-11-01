@@ -2,13 +2,14 @@ import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { formatEther, isAddress, toHex, type Address, type Hex } from 'viem';
 import { privateKeyToAccount, type PrivateKeyAccount } from 'viem/accounts';
 import { MONAD_CHAIN_ID, MONAD_RPC_URL } from './config';
-import { publicClient, readPlayer, readPending, readFee, readCanAct, readBestRun, readDeferredOutcome, sendTx, revertOf, isInsufficientFunds, TxReverted, type ChainState } from './contract';
+import { publicClient, readPlayer, readPending, readFee, readCanAct, readBestRun, readDeferredOutcome, readGasPrice, sendTx, topUp, withdraw, revertOf, isInsufficientFunds, TxReverted, type ChainState } from './contract';
 import {
   SESSION_MESSAGE,
   checkBurner,
   clearSessionKey,
   deriveSessionKey,
   getGasMultiplierPct,
+  setGasMultiplierPct,
   loadSessionKey,
   rememberBurner,
   rememberedBurner,
@@ -16,6 +17,7 @@ import {
   type StorageLike,
 } from './sessionKey';
 import { createTxQueue } from './txQueue';
+import { canPayWord, parseTopUp, withdrawAmount, wordCost } from './funds';
 import { preview } from '@shared/preview';
 import { catchUp } from '@shared/time';
 import { fallsNoLaterThan } from './edgeBound';
@@ -53,6 +55,8 @@ interface RetryCall {
 const PENDING_POLL_MS = 3000;
 const BALANCE_POLL_MS = 10_000;
 const RETRY_GAS_PCT = 160;
+const NO_FUNDS_ERROR = 'Game wallet has not enough MON';
+const GAS_PCT_OPTIONS = [100, 110, 120, 130, 140, 150, 160, 170, 180, 190, 200];
 
 // The burner's transactions, one at a time, for the whole page.
 const txQueue = createTxQueue({
@@ -123,7 +127,7 @@ function describeError(error: unknown): TransactionStatus {
       `Transaction was included but reverted (gas limit ${error.gasLimit}). It may have run out of gas or hit Monad's reserve-balance rule.`,
     );
   }
-  if (isInsufficientFunds(error)) return fail('Game wallet has not enough MON');
+  if (isInsufficientFunds(error)) return fail(NO_FUNDS_ERROR);
   if (r?.name === 'ActionRefused') {
     return { pending: false, message: '', warn: getRefusalMessage(Number(r.args[0])) };
   }
@@ -151,6 +155,12 @@ function App() {
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const [balance, setBalance] = useState<bigint | null>(null);
+  const balanceRef = useRef<bigint | null>(null);
+  // Word fee and gas price, refreshed together with the balance.
+  const [prices, setPrices] = useState<{ fee: bigint; gasPrice: bigint } | null>(null);
+  const [topUpInput, setTopUpInput] = useState('3');
+  const [confirmWithdraw, setConfirmWithdraw] = useState(false);
+  const [gasPct, setGasPct] = useState(120);
   const [unlocking, setUnlocking] = useState(false);
   // A derived key that differs from the one remembered: not in use until the player accepts it.
   const [mismatch, setMismatch] = useState<{ expected: string; key: Hex; address: Address } | null>(null);
@@ -185,6 +195,10 @@ function App() {
     setBurner(next);
     // A different player: nothing on screen or in flight belongs to them.
     setBalance(null);
+    balanceRef.current = null;
+    setPrices(null);
+    setConfirmWithdraw(false);
+    setGasPct(next ? getGasMultiplierPct(browserStorage('localStorage'), next.address) : 120);
     setState(null);
     setBestRun(null);
     setConfirmNew(false);
@@ -354,8 +368,20 @@ function App() {
 
   const refreshBalance = useCallback(async (address: Address) => {
     try {
-      const value = await publicClient.getBalance({ address });
-      if (burnerRef.current?.address === address) setBalance(value);
+      const [value, fee, gasPrice] = await Promise.all([
+        publicClient.getBalance({ address }),
+        readFee(),
+        readGasPrice(),
+      ]);
+      if (burnerRef.current?.address !== address) return;
+      const before = balanceRef.current;
+      balanceRef.current = value;
+      setBalance(value);
+      setPrices({ fee, gasPrice });
+      // Funds arrived: the "not enough MON" error is stale.
+      if (before !== null && value > before) {
+        setTxStatus((s) => (s.error === NO_FUNDS_ERROR ? { ...s, error: undefined } : s));
+      }
     } catch (error) {
       console.error('Failed to load balance:', error);
     }
@@ -499,6 +525,59 @@ function App() {
     else await send(retry.label, retry.fn, retry.args, retry.value, retry.doneMessage, RETRY_GAS_PCT);
   };
 
+  const runFunds = async (label: string, job: () => Promise<{ hash: Hex }>, queued: boolean) => {
+    const key = burner;
+    if (!key || busyRef.current) return;
+    busyRef.current = true;
+    setBusy(true);
+    setConfirmWithdraw(false);
+    setTxStatus({ pending: true, message: label });
+    try {
+      const { hash } = await job();
+      if (burnerRef.current !== key) return;
+      setTxStatus({ pending: false, message: `${label}: done (tx ${hash.slice(0, 10)}…)` });
+    } catch (error) {
+      if (burnerRef.current !== key) return;
+      console.error(error);
+      const code = (error as { code?: number } | null)?.code;
+      if (!queued && code === 4001) setTxStatus({ pending: false, message: '', error: 'Transaction was rejected in the wallet' });
+      else setTxStatus(describeError(error));
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
+      refreshBalance(key.address);
+    }
+  };
+
+  const topUpFromWallet = async () => {
+    const amount = parseTopUp(topUpInput);
+    const from = ownerRef.current;
+    if (!burner || !from || amount === null) return;
+    await runFunds(
+      'Top up',
+      async () => {
+        if (chain !== MONAD_CHAIN_ID) await switchToMonad();
+        return topUp(from, burner.address, amount);
+      },
+      false,
+    );
+  };
+
+  const withdrawToWallet = async () => {
+    const key = burner;
+    const to = ownerRef.current;
+    if (!key || !to) return;
+    await runFunds(
+      'Withdraw',
+      () =>
+        txQueue.enqueue(async () => {
+          if (burnerRef.current !== key) throw new Error('Game key is no longer active');
+          return withdraw(key, to);
+        }),
+      true,
+    );
+  };
+
   const game = projected?.game;
   const hasGame = !!game && game.startedAt !== 0n;
   // Seconds until the pending request can be cancelled (contract: block.timestamp > committedAt + timeout).
@@ -589,6 +668,64 @@ function App() {
           {!burner && urlPlayer && <span className="address">View only: {urlPlayer.slice(0, 6)}...{urlPlayer.slice(-4)}</span>}
         </div>
       </header>
+
+      {burner && (
+        <div className="funds-panel">
+          <h2>Game key</h2>
+          <div>
+            Balance: <span className="game-key-balance">{balance === null ? '…' : `${Number(formatEther(balance)).toFixed(4)} MON`}</span>
+            {balance !== null && prices && (
+              <> · ≈ {String(balance / wordCost(prices.fee, prices.gasPrice))} random words left</>
+            )}
+          </div>
+          {balance !== null && prices && !canPayWord(balance, prices.fee, prices.gasPrice) && (
+            <div className="warn-message">
+              Not enough MON for the next random word (~{Number(formatEther(wordCost(prices.fee, prices.gasPrice))).toFixed(4)} MON). Top up.
+            </div>
+          )}
+          <div className="funds-row">
+            <input
+              type="text"
+              inputMode="decimal"
+              value={topUpInput}
+              onChange={(e) => setTopUpInput(e.target.value)}
+              aria-label="Top up amount in MON"
+            />
+            <button onClick={topUpFromWallet} disabled={busy || parseTopUp(topUpInput) === null}>
+              Top up from wallet
+            </button>
+            <button onClick={() => setConfirmWithdraw(true)} disabled={busy || !!state?.pending.active}>
+              Withdraw all to wallet
+            </button>
+          </div>
+          {confirmWithdraw && owner && balance !== null && prices && (
+            <div className="warn-message">
+              Send ~{Number(formatEther(withdrawAmount(balance, prices.gasPrice))).toFixed(4)} MON to {owner}? Your game key will be
+              empty and cannot act until topped up.{' '}
+              <button onClick={withdrawToWallet} disabled={busy || !!state?.pending.active}>Withdraw</button>{' '}
+              <button onClick={() => setConfirmWithdraw(false)}>Cancel</button>
+            </div>
+          )}
+          <div className="funds-row">
+            <label>
+              Gas multiplier{' '}
+              <select
+                value={gasPct}
+                onChange={(e) => {
+                  const pct = Number(e.target.value);
+                  setGasPct(pct);
+                  setGasMultiplierPct(browserStorage('localStorage'), burner.address, pct);
+                }}
+              >
+                {GAS_PCT_OPTIONS.map((p) => (
+                  <option key={p} value={p}>{p}%</option>
+                ))}
+              </select>
+            </label>
+            <small>Monad charges the full gas limit; 120% has been enough in every measured transaction.</small>
+          </div>
+        </div>
+      )}
 
       {mismatch && (
         <div className="warn-message">

@@ -3,6 +3,9 @@ import type { Address } from 'viem';
 import { readLeaderboard, type LeaderboardRow } from './contract';
 
 const TOP = 20;
+const UNAVAILABLE_AFTER = 3;
+// Delay before retry n (0-based): 5 s, 10 s, then every 20 s.
+const retryDelay = (n: number) => (n === 0 ? 5_000 : n === 1 ? 10_000 : 20_000);
 
 const shorten = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;
 
@@ -26,18 +29,26 @@ export function Leaderboard({ account, refreshKey }: Props) {
 
   useEffect(() => {
     let live = true;
-    readLeaderboard()
-      .then((r) => {
-        if (!live) return;
-        setRows(r);
-        setUnavailable(false);
-      })
-      .catch((error) => {
-        console.error('Leaderboard not available:', error);
-        if (live) setUnavailable(true);
-      });
+    let failures = 0;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const load = () => {
+      readLeaderboard()
+        .then((r) => {
+          if (!live) return;
+          setRows(r);
+          setUnavailable(false);
+        })
+        .catch((error) => {
+          console.error('Leaderboard read failed:', error);
+          if (!live) return;
+          if (++failures >= UNAVAILABLE_AFTER) setUnavailable(true);
+          timer = setTimeout(load, retryDelay(failures - 1));
+        });
+    };
+    load();
     return () => {
       live = false;
+      if (timer !== null) clearTimeout(timer);
     };
   }, [refreshKey]);
 
@@ -58,7 +69,7 @@ export function Leaderboard({ account, refreshKey }: Props) {
     <div className="leaderboard">
       <h3>Leaderboard</h3>
       {unavailable ? (
-        <p>Leaderboard is not available on this contract.</p>
+        <p>Leaderboard is not available right now.</p>
       ) : rows === null ? (
         <p>Loading…</p>
       ) : sorted.length === 0 ? (

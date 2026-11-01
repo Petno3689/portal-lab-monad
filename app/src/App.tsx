@@ -54,6 +54,7 @@ interface RetryCall {
 
 const PENDING_POLL_MS = 3000;
 const BALANCE_POLL_MS = 10_000;
+const PRICES_POLL_MS = 60_000;
 const RETRY_GAS_PCT = 160;
 const NO_FUNDS_ERROR = 'Game wallet has not enough MON';
 const GAS_PCT_OPTIONS = [100, 110, 120, 130, 140, 150, 160, 170, 180, 190, 200];
@@ -366,13 +367,18 @@ function App() {
     load();
   }, [load]);
 
+  // Fee and gas price change slowly: re-read them at most once a minute.
+  const pricesRead = useRef<{ at: number; fee: bigint; gasPrice: bigint } | null>(null);
   const refreshBalance = useCallback(async (address: Address) => {
     try {
+      const cached = pricesRead.current;
+      const stale = !cached || Date.now() - cached.at >= PRICES_POLL_MS;
       const [value, fee, gasPrice] = await Promise.all([
         publicClient.getBalance({ address }),
-        readFee(),
-        readGasPrice(),
+        stale ? readFee() : cached.fee,
+        stale ? readGasPrice() : cached.gasPrice,
       ]);
+      if (stale) pricesRead.current = { at: Date.now(), fee, gasPrice };
       if (burnerRef.current?.address !== address) return;
       const before = balanceRef.current;
       balanceRef.current = value;

@@ -21,6 +21,7 @@ import { MONAD_RPC_URL, MONAD_CHAIN_ID, PORTAL_LAB_ADDRESS } from './config';
 import type { Portal, Game, Config, PortalTypeParams, Pending, BestRun } from '@shared/types';
 import ABI_JSON from './PortalLab.abi.json';
 import { withdrawAmount } from './funds';
+import { createRateLimitedFetch } from './rpcLimiter';
 
 export const portalLabAbi = (ABI_JSON as { abi: Abi }).abi;
 
@@ -36,7 +37,17 @@ export const monadTestnet = defineChain({
   rpcUrls: { default: { http: [MONAD_RPC_URL] } },
 });
 
-export const publicClient = createPublicClient({ chain: monadTestnet, transport: http(MONAD_RPC_URL, { retryCount: 5, retryDelay: 400 }),
+// The public RPC allows 15 requests/s per IP, shared with MetaMask: stay at 10.
+const limitedFetch = createRateLimitedFetch({
+  fetch: (input: RequestInfo | URL, init?: RequestInit) => fetch(input, init),
+  maxPerSecond: 10,
+  now: () => Date.now(),
+  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+});
+
+export const publicClient = createPublicClient({
+  chain: monadTestnet,
+  transport: http(MONAD_RPC_URL, { retryCount: 5, retryDelay: 400, fetchFn: limitedFetch }),
 });
 
 const lab = { address: PORTAL_LAB_ADDRESS as Address, abi: portalLabAbi } as const;
@@ -124,9 +135,19 @@ export async function readBestRun(player: Address): Promise<BestRun> {
   return toMirror<BestRun>(raw);
 }
 
+// `randomSource` is immutable on PortalLab: read it once per page.
+let randomSourceOnce: Promise<Address> | null = null;
+function readRandomSource(): Promise<Address> {
+  const p = (randomSourceOnce ??= publicClient.readContract({ ...lab, functionName: 'randomSource' }) as Promise<Address>);
+  p.catch(() => {
+    if (randomSourceOnce === p) randomSourceOnce = null;
+  });
+  return p;
+}
+
 /** The fee for one random word: `randomSource()` on PortalLab, then `fee()` there. */
 export async function readFee(): Promise<bigint> {
-  const source = (await publicClient.readContract({ ...lab, functionName: 'randomSource' })) as Address;
+  const source = await readRandomSource();
   return publicClient.readContract({ address: source, abi: randomSourceAbi, functionName: 'fee' });
 }
 
@@ -135,7 +156,7 @@ export async function readCanAct(player: Address, slot: number, action: number):
 }
 
 function walletClient(account: PrivateKeyAccount) {
-  return createWalletClient({ account, chain: monadTestnet, transport: http(MONAD_RPC_URL) });
+  return createWalletClient({ account, chain: monadTestnet, transport: http(MONAD_RPC_URL, { fetchFn: limitedFetch }) });
 }
 
 /** The transaction was included in a block and reverted: gas is charged, nothing happened. */

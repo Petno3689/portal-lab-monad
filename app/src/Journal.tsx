@@ -25,6 +25,8 @@ const before = (a: LabEvent, b: LabEvent) =>
 
 const actionName = (a: unknown) => ActionNames[Number(a) as Action] ?? `Action ${a}`;
 
+const deaths = (n: unknown) => (Number(n) === 1 ? '1 death' : `${n} deaths`);
+
 function describe(e: LabEvent, hour: number): string | null {
   const a = e.args;
   const slot = Number(a.slot);
@@ -32,14 +34,16 @@ function describe(e: LabEvent, hour: number): string | null {
   switch (e.eventName) {
     case 'GameStarted':
       return 'New game started';
-    case 'PortalSpawned':
-      return `${h}: a ${portalTypeNames[Number(a.portalType)] ?? 'Unknown'} portal opened in slot ${slot}`;
+    case 'PortalSpawned': {
+      const typeName = portalTypeNames[Number(a.portalType)] ?? 'Unknown';
+      return `${h}: ${/^[AEIOU]/.test(typeName) ? 'an' : 'a'} ${typeName} portal opened in slot ${slot}`;
+    }
     case 'PortalCollapsed':
-      return `${h}: slot ${slot} collapsed: ${a.deaths} deaths, −${a.hpLost} HP`;
+      return `${h}: slot ${slot} collapsed: ${deaths(a.deaths)}, −${a.hpLost} HP`;
     case 'PortalClosed':
-      return `${h}: slot ${slot} closed: ${a.deaths} deaths, −${a.hpLost} HP`;
+      return `${h}: slot ${slot} closed: ${deaths(a.deaths)}, −${a.hpLost} HP`;
     case 'CreaturesRescued':
-      return `${h}: ${a.count} creatures rescued from slot ${slot}, +${a.hpGained} HP`;
+      return `${h}: ${Number(a.count) === 1 ? '1 creature' : `${a.count} creatures`} rescued from slot ${slot}, +${a.hpGained} HP`;
     case 'ActionPerformed':
       return `${h}: ${actionName(a.action)} on slot ${slot} (−${a.powerSpent} power)`;
     case 'SurveyRequested':
@@ -115,7 +119,7 @@ export function Journal({ player, state }: Props) {
     queue.current = queue.current.then(async () => {
       if (currentKey.current !== key) return;
       try {
-        const head = await publicClient.getBlockNumber();
+        const head = await publicClient.getBlockNumber({ cacheTime: 0 });
         if (readTo.current === null) {
           let startLog: LabEvent | null = null;
           const { events: found, stopped } = await scanPlayerEventsBackward(player, 0n, head, BACKFILL_CAP, (chunk) => {

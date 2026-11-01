@@ -216,7 +216,7 @@ function App() {
         const p = await readPending(player);
         if (p.active || cancelled()) return;
         // The outcome events are at or before this block.
-        const seenAt = await publicClient.getBlockNumber();
+        const seenAt = await publicClient.getBlockNumber({ cacheTime: 0 });
         const fresh = await readPlayer(player);
         if (cancelled()) return;
         setState(fresh);

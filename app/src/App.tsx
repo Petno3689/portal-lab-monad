@@ -1,7 +1,21 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { formatEther, isAddress, type Address } from 'viem';
+import { formatEther, isAddress, toHex, type Address, type Hex } from 'viem';
+import { privateKeyToAccount, type PrivateKeyAccount } from 'viem/accounts';
 import { MONAD_CHAIN_ID, MONAD_RPC_URL } from './config';
-import { publicClient, readPlayer, readPending, readFee, readCanAct, readBestRun, readDeferredOutcome, blockOf, sendTx, revertOf, type ChainState } from './contract';
+import { publicClient, readPlayer, readPending, readFee, readCanAct, readBestRun, readDeferredOutcome, sendTx, revertOf, isInsufficientFunds, TxReverted, type ChainState } from './contract';
+import {
+  SESSION_MESSAGE,
+  checkBurner,
+  clearSessionKey,
+  deriveSessionKey,
+  getGasMultiplierPct,
+  loadSessionKey,
+  rememberBurner,
+  rememberedBurner,
+  saveSessionKey,
+  type StorageLike,
+} from './sessionKey';
+import { createTxQueue } from './txQueue';
 import { preview } from '@shared/preview';
 import { catchUp } from '@shared/time';
 import { fallsNoLaterThan } from './edgeBound';
@@ -25,7 +39,26 @@ interface TransactionStatus {
   warn?: string;
 }
 
+type GameFunction = 'startGame' | 'act' | 'sync' | 'settle' | 'cancelDeferred';
+
+/** A reverted call the player may send once more with more gas. */
+interface RetryCall {
+  label: string;
+  fn: GameFunction;
+  args: readonly unknown[];
+  value: bigint;
+  doneMessage?: string;
+}
+
 const PENDING_POLL_MS = 3000;
+const BALANCE_POLL_MS = 10_000;
+const RETRY_GAS_PCT = 160;
+
+// The burner's transactions, one at a time, for the whole page.
+const txQueue = createTxQueue({
+  getBlockNumber: () => publicClient.getBlockNumber({ cacheTime: 0 }),
+  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+});
 
 // Read-only view of any player's game: ?player=0x...
 const urlPlayer = (() => {
@@ -60,12 +93,37 @@ function writeDisconnected(on: boolean) {
   }
 }
 
+// Merely reading window.sessionStorage throws when the browser denies site data.
+function browserStorage(name: 'sessionStorage' | 'localStorage'): StorageLike | null {
+  try {
+    return window[name];
+  } catch {
+    return null;
+  }
+}
+
+function restoreBurner(owner: Address): PrivateKeyAccount | null {
+  const key = loadSessionKey(browserStorage('sessionStorage'), owner);
+  if (!key) return null;
+  try {
+    return privateKeyToAccount(key);
+  } catch {
+    return null;
+  }
+}
+
 const nowSec = () => BigInt(Math.floor(Date.now() / 1000));
 
 /** Refusals are warnings; failed transactions and anything unexpected are errors. */
 function describeError(error: unknown): TransactionStatus {
   const r = revertOf(error);
   const fail = (text: string): TransactionStatus => ({ pending: false, message: '', error: text });
+  if (error instanceof TxReverted) {
+    return fail(
+      `Transaction was included but reverted (gas limit ${error.gasLimit}). It may have run out of gas or hit Monad's reserve-balance rule.`,
+    );
+  }
+  if (isInsufficientFunds(error)) return fail('Game wallet has not enough MON');
   if (r?.name === 'ActionRefused') {
     return { pending: false, message: '', warn: getRefusalMessage(Number(r.args[0])) };
   }
@@ -82,7 +140,22 @@ function describeError(error: unknown): TransactionStatus {
 }
 
 function App() {
-  const [account, setAccount] = useState<Address | null>(null);
+  // `owner` is the MetaMask wallet: it only connects and signs SESSION_MESSAGE.
+  // `burner` is the game key: it is the player and signs every game transaction.
+  const [owner, setOwner] = useState<Address | null>(null);
+  const [burner, setBurner] = useState<PrivateKeyAccount | null>(null);
+  // Current values for async code that outlives a render; changed only with the state above.
+  const ownerRef = useRef<Address | null>(null);
+  const burnerRef = useRef<PrivateKeyAccount | null>(null);
+  // True while a transaction is being sent; the ref guards clicks that land before the re-render.
+  const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
+  const [balance, setBalance] = useState<bigint | null>(null);
+  const [unlocking, setUnlocking] = useState(false);
+  // A derived key that differs from the one remembered: not in use until the player accepts it.
+  const [mismatch, setMismatch] = useState<{ expected: string; key: Hex; address: Address } | null>(null);
+  const [retry, setRetry] = useState<RetryCall | null>(null);
+  const [copied, setCopied] = useState(false);
   const [chain, setChain] = useState<number | null>(null);
   const [state, setState] = useState<ChainState | null>(null);
   const [now, setNow] = useState(nowSec());
@@ -104,20 +177,46 @@ function App() {
   const cancelling = useRef(false);
   const cancelEpoch = useRef(0);
 
-  const player = account ?? urlPlayer;
+  const player = burner?.address ?? urlPlayer;
+
+  const adoptBurner = useCallback((next: PrivateKeyAccount | null) => {
+    if (next?.address === burnerRef.current?.address) return;
+    burnerRef.current = next;
+    setBurner(next);
+    // A different player: nothing on screen or in flight belongs to them.
+    setBalance(null);
+    setState(null);
+    setBestRun(null);
+    setConfirmNew(false);
+    setRetry(null);
+    setTxStatus({ pending: false, message: '' });
+    awaited.current = null;
+    awaitedBlock.current = null;
+  }, []);
+
+  const adoptOwner = useCallback((next: Address | null) => {
+    if (next?.toLowerCase() === ownerRef.current?.toLowerCase()) return;
+    ownerRef.current = next;
+    setOwner(next);
+    setMismatch(null);
+    // The game key belongs to one owner: a switched account must not keep playing with it.
+    adoptBurner(next ? restoreBurner(next) : null);
+  }, [adoptBurner]);
 
   useEffect(() => {
     if (!window.ethereum) return;
     if (!disconnected.current) {
-      window.ethereum.request({ method: 'eth_accounts' }).then((a: string[]) => a[0] && setAccount(a[0] as Address));
+      window.ethereum.request({ method: 'eth_accounts' }).then((a: string[]) => a[0] && adoptOwner(a[0] as Address));
     }
     window.ethereum.request({ method: 'eth_chainId' }).then((id: string) => setChain(parseInt(id, 16)));
     window.ethereum.on?.('accountsChanged', (a: string[]) => {
       if (disconnected.current) return;
-      setAccount((a[0] as Address) ?? null);
+      const next = (a[0] as Address) ?? null;
+      if (!next && ownerRef.current) clearSessionKey(browserStorage('sessionStorage'), ownerRef.current);
+      adoptOwner(next);
     });
     window.ethereum.on?.('chainChanged', (id: string) => setChain(parseInt(id, 16)));
-  }, []);
+  }, [adoptOwner]);
 
   const connectWallet = async () => {
     if (!window.ethereum) {
@@ -127,26 +226,80 @@ function App() {
     const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
     disconnected.current = false;
     writeDisconnected(false);
-    setAccount(accounts[0]);
+    adoptOwner(accounts[0]);
     const id = await window.ethereum.request({ method: 'eth_chainId' });
     setChain(parseInt(id as string, 16));
   };
 
   const disconnectWallet = async () => {
+    // The key goes first: the wallet may keep the revoke request open indefinitely.
+    disconnected.current = true;
+    writeDisconnected(true);
+    if (ownerRef.current) clearSessionKey(browserStorage('sessionStorage'), ownerRef.current);
+    adoptOwner(null);
+    setTxStatus({ pending: false, message: '' });
     try {
       await window.ethereum?.request({ method: 'wallet_revokePermissions', params: [{ eth_accounts: {} }] });
     } catch {
       // not every wallet supports revoking permissions
     }
-    disconnected.current = true;
-    writeDisconnected(true);
-    setAccount(null);
-    setState(null);
-    setBestRun(null);
-    setConfirmNew(false);
-    setTxStatus({ pending: false, message: '' });
-    awaited.current = null;
-    awaitedBlock.current = null;
+  };
+
+  const adoptKey = (signer: Address, key: Hex) => {
+    saveSessionKey(browserStorage('sessionStorage'), signer, key);
+    adoptBurner(privateKeyToAccount(key));
+  };
+
+  const unlockGameKey = async () => {
+    const signer = ownerRef.current;
+    if (!signer) return;
+    setUnlocking(true);
+    try {
+      const signature = (await window.ethereum.request({
+        method: 'personal_sign',
+        params: [toHex(SESSION_MESSAGE), signer],
+      })) as Hex;
+      // The wallet may have switched accounts while its prompt was open.
+      if (ownerRef.current !== signer) return;
+      const key = deriveSessionKey(signature);
+      const { address } = privateKeyToAccount(key);
+      const local = browserStorage('localStorage');
+      const known = checkBurner(local, signer, address);
+      if (known === 'mismatch') {
+        setMismatch({ expected: rememberedBurner(local, signer) ?? '', key, address });
+        return;
+      }
+      if (known === 'new') rememberBurner(local, signer, address);
+      adoptKey(signer, key);
+    } catch (error) {
+      const reason = error as { code?: number; message?: string } | null;
+      setTxStatus({
+        pending: false,
+        message: '',
+        error: reason?.code === 4001 ? 'Signature request was rejected' : (reason?.message ?? String(error)),
+      });
+    } finally {
+      setUnlocking(false);
+    }
+  };
+
+  const acceptNewKey = () => {
+    const signer = ownerRef.current;
+    if (!signer || !mismatch) return;
+    rememberBurner(browserStorage('localStorage'), signer, mismatch.address);
+    adoptKey(signer, mismatch.key);
+    setMismatch(null);
+  };
+
+  const copyBurnerAddress = async () => {
+    if (!burner) return;
+    try {
+      await navigator.clipboard.writeText(burner.address);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      setTxStatus({ pending: false, message: '', error: `Could not copy. Game key address: ${burner.address}` });
+    }
   };
 
   const switchToMonad = async () => {
@@ -181,7 +334,10 @@ function App() {
     if (!player) return;
     setLoading(true);
     try {
-      setState(await readPlayer(player));
+      const fresh = await readPlayer(player);
+      // The game key may have been unlocked or dropped during the read.
+      if ((burnerRef.current?.address ?? urlPlayer) !== player) return;
+      setState(fresh);
       setNow(nowSec());
       refreshBestRun(player);
     } catch (error) {
@@ -196,6 +352,23 @@ function App() {
     load();
   }, [load]);
 
+  const refreshBalance = useCallback(async (address: Address) => {
+    try {
+      const value = await publicClient.getBalance({ address });
+      if (burnerRef.current?.address === address) setBalance(value);
+    } catch (error) {
+      console.error('Failed to load balance:', error);
+    }
+  }, []);
+
+  const burnerAddress = burner?.address;
+  useEffect(() => {
+    if (!burnerAddress) return;
+    refreshBalance(burnerAddress);
+    const id = setInterval(() => refreshBalance(burnerAddress), BALANCE_POLL_MS);
+    return () => clearInterval(id);
+  }, [burnerAddress, refreshBalance]);
+
   // Clock for the local projection.
   useEffect(() => {
     const id = setInterval(() => setNow(nowSec()), 1000);
@@ -209,9 +382,10 @@ function App() {
   const pendingActive = state?.pending.active ?? false;
   useEffect(() => {
     if (!pendingActive || !player) return;
+    let live = true;
     const id = setInterval(async () => {
       const epoch = cancelEpoch.current;
-      const cancelled = () => cancelling.current || cancelEpoch.current !== epoch;
+      const cancelled = () => !live || cancelling.current || cancelEpoch.current !== epoch;
       try {
         const p = await readPending(player);
         if (p.active || cancelled()) return;
@@ -232,46 +406,67 @@ function App() {
         console.error('Pending poll failed:', error);
       }
     }, PENDING_POLL_MS);
-    return () => clearInterval(id);
+    return () => {
+      live = false;
+      clearInterval(id);
+    };
   }, [pendingActive, player]);
 
   const send = async (
     label: string,
-    fn: 'startGame' | 'act' | 'sync' | 'settle' | 'cancelDeferred',
+    fn: GameFunction,
     args: readonly unknown[],
     value = 0n,
     doneMessage?: string,
+    retryGasPct?: number,
   ) => {
-    if (!account) return;
+    const key = burner;
+    if (!key || busyRef.current) return;
+    busyRef.current = true;
+    setBusy(true);
+    const dropped = () => burnerRef.current !== key;
     setConfirmNew(false);
+    setRetry(null);
     setTxStatus({ pending: true, message: label });
     try {
-      if (chain !== MONAD_CHAIN_ID) await switchToMonad();
-      const hash = await sendTx(account, fn, args, value);
-      const fresh = await readPlayer(account);
+      const pct = retryGasPct ?? getGasMultiplierPct(browserStorage('localStorage'), key.address);
+      const { hash, blockNumber } = await txQueue.enqueue(async () => {
+        // Disconnecting must stop what is still queued: nothing signs after the key is dropped.
+        if (dropped()) throw new Error('Game key is no longer active');
+        return sendTx(key, fn, args, pct, value);
+      });
+      if (dropped()) return;
+      const fresh = await readPlayer(key.address);
+      if (dropped()) return;
       setState(fresh);
       setNow(nowSec());
-      if (fn === 'settle' || fn === 'startGame') refreshBestRun(account);
+      if (fn === 'settle' || fn === 'startGame') refreshBestRun(key.address);
       if (fresh.pending.active) {
         awaited.current = fresh.pending;
-        awaitedBlock.current = await blockOf(hash).catch(() => null);
+        awaitedBlock.current = blockNumber;
         setTxStatus({ pending: true, message: `${label}: waiting for the random word from Pyth (tx ${hash.slice(0, 10)}…)` });
       } else {
         setTxStatus({ pending: false, message: doneMessage ?? `${label}: done (tx ${hash.slice(0, 10)}…)` });
       }
     } catch (error) {
+      if (dropped()) return;
       console.error(error);
       setTxStatus(describeError(error));
+      if (error instanceof TxReverted && retryGasPct === undefined) setRetry({ label, fn, args, value, doneMessage });
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
+      refreshBalance(key.address);
     }
   };
 
   const performAction = async (slot: number, action: Action) => {
-    if (!account || !state) return;
+    if (!burner || !state || busyRef.current) return;
     if (state.pending.active) {
       setTxStatus({ pending: true, message: 'Previous action is still waiting for the random word' });
       return;
     }
-    const refusal = await readCanAct(account, slot, action);
+    const refusal = await readCanAct(burner.address, slot, action);
     if (refusal !== 0) {
       setTxStatus({ pending: false, message: '', warn: getRefusalMessage(refusal) });
       return;
@@ -283,18 +478,25 @@ function App() {
     await send(`Action ${Action[action]} on slot ${slot}`, 'act', [slot, action], value);
   };
 
-  const cancelRequest = async () => {
-    if (!player) return;
+  const cancelRequest = async (retryGasPct?: number) => {
+    if (!burner) return;
     cancelling.current = true;
     cancelEpoch.current += 1;
     awaited.current = null;
     awaitedBlock.current = null;
     try {
-      await send('Cancel request', 'cancelDeferred', [player], 0n, 'Request cancelled');
+      await send('Cancel request', 'cancelDeferred', [burner.address], 0n, 'Request cancelled', retryGasPct);
     } finally {
       cancelling.current = false;
       cancelEpoch.current += 1;
     }
+  };
+
+  const retryWithMoreGas = async () => {
+    if (!retry) return;
+    // A cancellation keeps its guard against the pending poll.
+    if (retry.fn === 'cancelDeferred') await cancelRequest(RETRY_GAS_PCT);
+    else await send(retry.label, retry.fn, retry.args, retry.value, retry.doneMessage, RETRY_GAS_PCT);
   };
 
   const game = projected?.game;
@@ -355,13 +557,27 @@ function App() {
       <header className="header">
         <h1>Unstable Portals Lab</h1>
         <div className="wallet-section">
-          {!account ? (
+          {!owner ? (
             <button onClick={connectWallet} className="primary">
               Connect Wallet
             </button>
           ) : (
             <>
-              <span className="address">{account.slice(0, 6)}...{account.slice(-4)}</span>
+              <span className="address">{owner.slice(0, 6)}...{owner.slice(-4)}</span>
+              {burner ? (
+                <div className="game-key">
+                  <span className="address">Game key {burner.address.slice(0, 6)}...{burner.address.slice(-4)}</span>
+                  <button onClick={copyBurnerAddress}>{copied ? 'Copied' : 'Copy address'}</button>
+                  {balance !== null && (
+                    <span className="game-key-balance">{Number(formatEther(balance)).toFixed(4)} MON</span>
+                  )}
+                  {balance === 0n && <span className="game-key-fund">Fund this address from your wallet to play</span>}
+                </div>
+              ) : (
+                <button onClick={unlockGameKey} className="primary" disabled={unlocking}>
+                  Unlock game key
+                </button>
+              )}
               <button onClick={disconnectWallet}>Disconnect</button>
               {chain !== MONAD_CHAIN_ID && (
                 <button onClick={switchToMonad} className="danger">
@@ -370,11 +586,25 @@ function App() {
               )}
             </>
           )}
-          {!account && urlPlayer && <span className="address">View only: {urlPlayer.slice(0, 6)}...{urlPlayer.slice(-4)}</span>}
+          {!burner && urlPlayer && <span className="address">View only: {urlPlayer.slice(0, 6)}...{urlPlayer.slice(-4)}</span>}
         </div>
       </header>
 
+      {mismatch && (
+        <div className="warn-message">
+          <p>
+            Your wallet produced a different game key than before on this browser (expected {mismatch.expected}, got{' '}
+            {mismatch.address}). It may not sign deterministically.
+          </p>
+          <button onClick={acceptNewKey}>Use the new key anyway</button>
+        </div>
+      )}
       {txStatus.error && <div className="error-message">{txStatus.error}</div>}
+      {retry && (
+        <div className="error-message">
+          <button onClick={retryWithMoreGas} disabled={busy}>Retry with more gas</button>
+        </div>
+      )}
       {txStatus.warn && <div className="warn-message">{txStatus.warn}</div>}
       {txStatus.message && <div className="info-message">{txStatus.message}</div>}
       {state?.pending.active && (
@@ -387,7 +617,7 @@ function App() {
               <>Can be cancelled in {String(cancelWait)} s</>
             ) : (
               <>
-                <button onClick={cancelRequest} disabled={!account}>
+                <button onClick={() => cancelRequest()} disabled={!burner || busy}>
                   Cancel request
                 </button>{' '}
                 The Pyth fee is not refunded.
@@ -399,14 +629,18 @@ function App() {
 
       {!player ? (
         <div className="no-game">
-          <p>Connect your wallet (or open the page with ?player=0x…)</p>
+          <p>
+            {owner
+              ? 'Unlock your game key to play: one signature, then no more wallet popups.'
+              : 'Connect your wallet (or open the page with ?player=0x…)'}
+          </p>
         </div>
       ) : loading && !state ? (
         <div className="loading">Loading game state...</div>
       ) : !hasGame || !projected || !game ? (
         <div className="no-game">
           <p>No active game. Start a new one!</p>
-          <button onClick={async () => send('New game', 'startGame', [], await readFee())} className="primary" disabled={!account}>
+          <button onClick={async () => send('New game', 'startGame', [], await readFee())} className="primary" disabled={!burner || busy}>
             Start Game
           </button>
         </div>
@@ -556,15 +790,15 @@ function App() {
                     </div>
 
                     <div className="action-buttons">
-                      <button onClick={() => performAction(idx, Action.ToggleQuestioned)}>❓</button>
-                      <button onClick={() => performAction(idx, Action.Stabilize)}>⬆</button>
-                      <button onClick={() => performAction(idx, Action.Destabilize)}>⬇</button>
-                      <button onClick={() => performAction(idx, Action.SendObserver)}>👁</button>
-                      <button onClick={() => performAction(idx, Action.RecallObserver)}>🔙</button>
-                      <button onClick={() => performAction(idx, Action.SendRescuer)}>🚀</button>
-                      <button onClick={() => performAction(idx, Action.RecallRescuer)}>🔙</button>
-                      <button onClick={() => performAction(idx, Action.Evacuate)}>✈</button>
-                      <button onClick={() => performAction(idx, Action.Close)}>✖</button>
+                      <button onClick={() => performAction(idx, Action.ToggleQuestioned)} disabled={busy}>❓</button>
+                      <button onClick={() => performAction(idx, Action.Stabilize)} disabled={busy}>⬆</button>
+                      <button onClick={() => performAction(idx, Action.Destabilize)} disabled={busy}>⬇</button>
+                      <button onClick={() => performAction(idx, Action.SendObserver)} disabled={busy}>👁</button>
+                      <button onClick={() => performAction(idx, Action.RecallObserver)} disabled={busy}>🔙</button>
+                      <button onClick={() => performAction(idx, Action.SendRescuer)} disabled={busy}>🚀</button>
+                      <button onClick={() => performAction(idx, Action.RecallRescuer)} disabled={busy}>🔙</button>
+                      <button onClick={() => performAction(idx, Action.Evacuate)} disabled={busy}>✈</button>
+                      <button onClick={() => performAction(idx, Action.Close)} disabled={busy}>✖</button>
                     </div>
                   </>
                 )}
@@ -613,13 +847,13 @@ function App() {
                   const value = state.pending.active ? 0n : await readFee();
                   await send('Paid sync', 'sync', [player], value);
                 }}
-                disabled={!account}
+                disabled={!burner || busy}
               >
                 Sync (pays for word)
               </button>
             )}
             {game.finished && !game.settled && (
-              <button onClick={() => send('Settle game', 'settle', [player])} className="primary" disabled={!account}>
+              <button onClick={() => send('Settle game', 'settle', [player])} className="primary" disabled={!burner || busy}>
                 Settle Game
               </button>
             )}
@@ -629,7 +863,7 @@ function App() {
                 else setConfirmNew(true);
               }}
               className="secondary"
-              disabled={!account}
+              disabled={!burner || busy}
             >
               New Game
             </button>
@@ -652,6 +886,7 @@ function App() {
                   await send('New game', 'startGame', [], await readFee());
                 }}
                 className="danger"
+                disabled={busy}
               >
                 Forfeit and start new
               </button>{' '}
@@ -661,7 +896,7 @@ function App() {
         </div>
       )}
 
-      <Leaderboard account={account} refreshKey={leaderboardTick} />
+      <Leaderboard account={burner?.address ?? null} refreshKey={leaderboardTick} />
     </div>
   );
 }

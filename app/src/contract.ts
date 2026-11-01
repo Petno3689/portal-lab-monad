@@ -1,7 +1,6 @@
 import {
   createPublicClient,
   createWalletClient,
-  custom,
   defineChain,
   encodeAbiParameters,
   hexToBigInt,
@@ -12,9 +11,11 @@ import {
   toHex,
   BaseError,
   ContractFunctionRevertedError,
+  InsufficientFundsError,
   type Abi,
   type Address,
 } from 'viem';
+import type { PrivateKeyAccount } from 'viem/accounts';
 import { MONAD_RPC_URL, MONAD_CHAIN_ID, PORTAL_LAB_ADDRESS } from './config';
 import type { Portal, Game, Config, PortalTypeParams, Pending, BestRun } from '@shared/types';
 import ABI_JSON from './PortalLab.abi.json';
@@ -131,19 +132,35 @@ export async function readCanAct(player: Address, slot: number, action: number):
   return Number(await publicClient.readContract({ ...lab, functionName: 'canAct', args: [player, slot, action] }));
 }
 
-function walletClient(account: Address) {
-  return createWalletClient({ account, chain: monadTestnet, transport: custom(window.ethereum) });
+function walletClient(account: PrivateKeyAccount) {
+  return createWalletClient({ account, chain: monadTestnet, transport: http(MONAD_RPC_URL) });
 }
 
-/** Send a PortalLab transaction from `account` and wait for its receipt. */
+/** The transaction was included in a block and reverted: gas is charged, nothing happened. */
+export class TxReverted extends Error {
+  readonly hash: `0x${string}`;
+  readonly gasLimit: bigint;
+  readonly blockNumber: bigint;
+
+  constructor(hash: `0x${string}`, gasLimit: bigint, blockNumber: bigint) {
+    super(`Transaction ${hash} reverted`);
+    this.name = 'TxReverted';
+    this.hash = hash;
+    this.gasLimit = gasLimit;
+    this.blockNumber = blockNumber;
+  }
+}
+
+/** Send a PortalLab transaction signed locally by `account` and wait for its receipt. */
 export async function sendTx(
-  account: Address,
+  account: PrivateKeyAccount,
   functionName: 'startGame' | 'act' | 'sync' | 'settle' | 'cancelDeferred',
   args: readonly unknown[],
+  gasMultiplierPct: number,
   value = 0n,
-): Promise<`0x${string}`> {
+): Promise<{ hash: `0x${string}`; blockNumber: bigint }> {
   const wallet = walletClient(account);
-  // Simulate first so a revert surfaces with the contract's own error, not a wallet popup.
+  // Simulate first so a revert surfaces with the contract's own error, not a burned fee.
   const { request } = await publicClient.simulateContract({
     ...lab,
     account,
@@ -153,9 +170,9 @@ export async function sendTx(
   } as never);
   // The contract ages the world lazily, so the work an action does grows with the time
   // between this estimate and inclusion in a block; the bare estimate runs out of gas.
-  // Trade-off: Monad charges by the DECLARED gas limit, not the amount used, so this
-  // headroom is paid on every action. 60% covers a few extra game hours of catch-up;
-  // it balances wasted fee against lost transactions, it is not a free margin.
+  // Trade-off: Monad charges gas price × gas LIMIT, not gas used, so this headroom is paid
+  // on every action. Over 26 real transactions the needed gas was at most 1.073 × the
+  // estimate; the default 120% covers that without overpaying a third of the limit.
   const gas = await publicClient.estimateContractGas({
     ...lab,
     account,
@@ -163,10 +180,11 @@ export async function sendTx(
     args: args as never,
     value,
   } as never);
-  const hash = await wallet.writeContract({ ...(request as object), gas: (gas * 160n) / 100n } as never);
+  const gasLimit = (gas * BigInt(gasMultiplierPct)) / 100n;
+  const hash = await wallet.writeContract({ ...(request as object), gas: gasLimit } as never);
   const receipt = await publicClient.waitForTransactionReceipt({ hash });
-  if (receipt.status !== 'success') throw new Error(`Transaction ${hash} reverted`);
-  return hash;
+  if (receipt.status === 'reverted') throw new TxReverted(hash, gasLimit, receipt.blockNumber);
+  return { hash, blockNumber: receipt.blockNumber };
 }
 
 /** The custom error a call reverted with, if any: `{ name, args }`. */
@@ -179,8 +197,9 @@ export function revertOf(error: unknown): { name: string; args: readonly unknown
   return null;
 }
 
-export async function blockOf(hash: `0x${string}`): Promise<bigint> {
-  return (await publicClient.getTransactionReceipt({ hash })).blockNumber;
+/** Whether a call failed because the sender cannot pay for it. */
+export function isInsufficientFunds(error: unknown): boolean {
+  return error instanceof BaseError && error.walk((e) => e instanceof InsufficientFundsError) !== null;
 }
 
 /** One PortalLab event decoded from a log. */

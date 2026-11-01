@@ -46,6 +46,23 @@ body {
   border-radius: 4px;
 }
 
+.game-key {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.game-key-balance {
+  font-family: monospace;
+  color: #ffd700;
+}
+
+.game-key-fund {
+  color: #ffd060;
+  font-size: 0.9rem;
+}
+
 button {
   padding: 0.5rem 1rem;
   border: 1px solid #3a6aaa;

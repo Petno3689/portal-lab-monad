@@ -28,6 +28,7 @@ const randomSourceAbi = [
 export const monadTestnet = defineChain({
   id: MONAD_CHAIN_ID,
   name: 'Monad Testnet',
+  blockTime: 400,
   nativeCurrency: { decimals: 18, name: 'MON', symbol: 'MON' },
   rpcUrls: { default: { http: [MONAD_RPC_URL] } },
 });

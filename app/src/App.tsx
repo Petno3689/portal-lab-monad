@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { formatEther, isAddress, toHex, type Address, type Hex } from 'viem';
 import { privateKeyToAccount, type PrivateKeyAccount } from 'viem/accounts';
 import { MONAD_CHAIN_ID, MONAD_RPC_URL } from './config';
-import { publicClient, readPlayer, readPending, readPreview, readFee, readCanAct, readBestRun, readDeferredOutcome, readGasPrice, sendTx, topUp, withdraw, revertOf, isInsufficientFunds, TxReverted, type ChainState } from './contract';
+import { publicClient, readPlayer, readPending, readPreview, readFee, readCanAct, readBestRun, readDeferredOutcome, readGasPrice, sendTx, sendNameTx, readName, topUp, withdraw, revertOf, isInsufficientFunds, TxReverted, type ChainState } from './contract';
 import {
   SESSION_MESSAGE,
   checkBurner,
@@ -29,6 +29,7 @@ import { fallsNoLaterThan } from './edgeBound';
 import { Action, getRefusalMessage, getCancelReasonMessage, portalTypeNames } from './types';
 import { Journal } from './Journal';
 import { Leaderboard } from './Leaderboard';
+import { validateName, NAME_LENGTH_REASON } from './names';
 import type { Pending, BestRun } from '@shared/types';
 import './App.css';
 
@@ -180,6 +181,20 @@ function describeError(error: unknown): TransactionStatus {
   return fail((error as { shortMessage?: string })?.shortMessage ?? String(error));
 }
 
+/** User-facing text for a NameRegistry revert, or null for anything else. */
+function nameErrorText(error: unknown): string | null {
+  switch (revertOf(error)?.name) {
+    case 'NameTaken':
+      return 'This nickname is taken';
+    case 'InvalidName':
+      return `${NAME_LENGTH_REASON}; only Latin letters, digits, _ and -`;
+    case 'NoName':
+      return 'You have no nickname';
+    default:
+      return null;
+  }
+}
+
 function App() {
   // `owner` is the MetaMask wallet: it only connects and signs SESSION_MESSAGE.
   // `burner` is the game key: it is the player and signs every game transaction.
@@ -197,6 +212,8 @@ function App() {
   const [prices, setPrices] = useState<{ fee: bigint; gasPrice: bigint } | null>(null);
   const [topUpInput, setTopUpInput] = useState('3');
   const [confirmWithdraw, setConfirmWithdraw] = useState(false);
+  const [nickname, setNickname] = useState<string | null>(null);
+  const [nameInput, setNameInput] = useState('');
   const [gasPct, setGasPct] = useState(120);
   const [autoWord, setAutoWordOn] = useState(true);
   const [autoSettle, setAutoSettleOn] = useState(true);
@@ -257,6 +274,8 @@ function App() {
     balanceRef.current = null;
     setPrices(null);
     setConfirmWithdraw(false);
+    setNickname(null);
+    setNameInput('');
     setGasPct(next ? getGasMultiplierPct(browserStorage('localStorage'), next.address) : 120);
     setAutoWordOn(next ? getAutoWord(browserStorage('localStorage'), next.address) : true);
     setAutoSettleOn(next ? getAutoSettle(browserStorage('localStorage'), next.address) : true);
@@ -810,6 +829,53 @@ function App() {
     );
   };
 
+  const refreshNickname = useCallback((address: Address) => {
+    readName(address)
+      .then((n) => {
+        if (burnerRef.current?.address === address) setNickname(n);
+      })
+      .catch((error) => console.error('Failed to read nickname:', error));
+  }, []);
+
+  const burnerAddr = burner?.address;
+  useEffect(() => {
+    if (burnerAddr) refreshNickname(burnerAddr);
+  }, [burnerAddr, refreshNickname]);
+
+  const nameCheck = validateName(nameInput);
+
+  const runNameTx = async (label: string, fn: 'setName' | 'clearName', args: readonly unknown[]) => {
+    const key = burner;
+    if (!key) return;
+    await runFunds(
+      label,
+      async () => {
+        try {
+          const result = await txQueue.enqueue(async () => {
+            if (burnerRef.current !== key) throw new Error('Game key is no longer active');
+            const pct = getGasMultiplierPct(browserStorage('localStorage'), key.address);
+            return sendNameTx(key, fn, args, pct);
+          });
+          if (fn === 'setName') setNameInput('');
+          setLeaderboardTick((t) => t + 1);
+          return result;
+        } catch (error) {
+          const text = nameErrorText(error);
+          if (text) throw Object.assign(new Error(text), { shortMessage: text });
+          throw error;
+        } finally {
+          refreshNickname(key.address);
+        }
+      },
+      true,
+    );
+  };
+
+  const saveName = () => {
+    if (nameCheck.ok) void runNameTx('Save nickname', 'setName', [nameCheck.name]);
+  };
+  const clearNickname = () => void runNameTx('Clear nickname', 'clearName', []);
+
   const game = projected?.game;
   const hasGame = !!game && game.startedAt !== 0n;
   // Seconds until the pending request can be cancelled (contract: block.timestamp > committedAt + timeout).
@@ -938,6 +1004,31 @@ function App() {
               <button onClick={() => setConfirmWithdraw(false)}>Cancel</button>
             </div>
           )}
+          <div className="funds-row">
+            <label>
+              Nickname:{' '}
+              <strong>{nickname === null ? '…' : nickname === '' ? 'none' : nickname}</strong>
+            </label>
+          </div>
+          <div className="funds-row">
+            <input
+              type="text"
+              value={nameInput}
+              maxLength={40}
+              onChange={(e) => setNameInput(e.target.value)}
+              aria-label="Nickname"
+              placeholder="New nickname"
+            />
+            <button onClick={saveName} disabled={busy || !nameCheck.ok}>
+              Save
+            </button>
+            {nickname && (
+              <button onClick={clearNickname} disabled={busy}>
+                Clear
+              </button>
+            )}
+          </div>
+          {nameInput.trim() !== '' && !nameCheck.ok && <small className="name-reason">{nameCheck.reason}</small>}
           <div className="funds-row">
             <label>
               Gas multiplier{' '}

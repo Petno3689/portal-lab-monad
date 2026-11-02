@@ -17,7 +17,7 @@ import {
   type Hex,
 } from 'viem';
 import type { PrivateKeyAccount } from 'viem/accounts';
-import { MONAD_RPC_URL, MONAD_CHAIN_ID, PORTAL_LAB_ADDRESS } from './config';
+import { MONAD_RPC_URL, MONAD_CHAIN_ID, PORTAL_LAB_ADDRESS, NAME_REGISTRY_ADDRESS } from './config';
 import type { Portal, Game, Config, PortalTypeParams, Pending, BestRun } from '@shared/types';
 import ABI_JSON from './PortalLab.abi.json';
 import { withdrawAmount } from './funds';
@@ -51,6 +51,23 @@ export const publicClient = createPublicClient({
 });
 
 const lab = { address: PORTAL_LAB_ADDRESS as Address, abi: portalLabAbi } as const;
+
+export const nameRegistryAbi = [
+  { type: 'function', name: 'setName', inputs: [{ name: 'name', type: 'string' }], outputs: [], stateMutability: 'nonpayable' },
+  { type: 'function', name: 'clearName', inputs: [], outputs: [], stateMutability: 'nonpayable' },
+  { type: 'function', name: 'nameOf', inputs: [{ name: 'holder', type: 'address' }], outputs: [{ name: '', type: 'string' }], stateMutability: 'view' },
+  { type: 'function', name: 'holderOf', inputs: [{ name: 'name', type: 'string' }], outputs: [{ name: '', type: 'address' }], stateMutability: 'view' },
+  { type: 'function', name: 'namesOf', inputs: [{ name: 'holders', type: 'address[]' }], outputs: [{ name: '', type: 'string[]' }], stateMutability: 'view' },
+  { type: 'function', name: 'MIN_LENGTH', inputs: [], outputs: [{ name: '', type: 'uint256' }], stateMutability: 'view' },
+  { type: 'function', name: 'MAX_LENGTH', inputs: [], outputs: [{ name: '', type: 'uint256' }], stateMutability: 'view' },
+  { type: 'event', name: 'NameSet', inputs: [{ name: 'holder', type: 'address', indexed: true }, { name: 'name', type: 'string', indexed: false }] },
+  { type: 'event', name: 'NameCleared', inputs: [{ name: 'holder', type: 'address', indexed: true }] },
+  { type: 'error', name: 'InvalidName', inputs: [] },
+  { type: 'error', name: 'NameTaken', inputs: [] },
+  { type: 'error', name: 'NoName', inputs: [] },
+] as const satisfies Abi;
+
+const registry = { address: NAME_REGISTRY_ADDRESS as Address, abi: nameRegistryAbi } as const;
 
 // viem decodes uint8..uint48 as `number` and wider ints as `bigint`; the shared
 // mirror wants every numeric field as `bigint`, but enum fields as plain numbers.
@@ -213,6 +230,41 @@ export async function sendTx(
     args: args as never,
     value,
   } as never);
+  const gasLimit = (gas * BigInt(gasMultiplierPct)) / 100n;
+  const hash = await wallet.writeContract({ ...(request as object), gas: gasLimit } as never);
+  const receipt = await publicClient.waitForTransactionReceipt({ hash });
+  if (receipt.status === 'reverted') throw new TxReverted(hash, gasLimit, receipt.blockNumber);
+  return { hash, blockNumber: receipt.blockNumber };
+}
+
+const NAMES_CHUNK = 100;
+
+/** Nicknames of `players` (lowercase address → name; "" is no name), read in chunks of 100. */
+export async function readNames(players: Address[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  for (let i = 0; i < players.length; i += NAMES_CHUNK) {
+    const chunk = players.slice(i, i + NAMES_CHUNK);
+    const names = await publicClient.readContract({ ...registry, functionName: 'namesOf', args: [chunk] });
+    chunk.forEach((p, j) => out.set(p.toLowerCase(), names[j]));
+  }
+  return out;
+}
+
+export function readName(player: Address): Promise<string> {
+  return publicClient.readContract({ ...registry, functionName: 'nameOf', args: [player] });
+}
+
+/** Send a NameRegistry transaction signed locally by `account`; same flow as `sendTx`. */
+export async function sendNameTx(
+  account: PrivateKeyAccount,
+  functionName: 'setName' | 'clearName',
+  args: readonly unknown[],
+  gasMultiplierPct: number,
+): Promise<{ hash: `0x${string}`; blockNumber: bigint }> {
+  const wallet = walletClient(account);
+  const call = { ...registry, account, functionName, args: args as never } as never;
+  const { request } = await publicClient.simulateContract(call);
+  const gas = await publicClient.estimateContractGas(call);
   const gasLimit = (gas * BigInt(gasMultiplierPct)) / 100n;
   const hash = await wallet.writeContract({ ...(request as object), gas: gasLimit } as never);
   const receipt = await publicClient.waitForTransactionReceipt({ hash });

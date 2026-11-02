@@ -14,6 +14,7 @@ for as long as you can.
 |---|---|
 | `PortalLab` | `0x3FE4121729a8f1e2BcC7ECD9dB1279E6EBeF7678` |
 | `PythEntropySource` | `0x45A7120772BB9D15FDFd682dF3EcCc8AeAD306c2` |
+| `NameRegistry` | `0xe14b1389853aD407A5B72193Ae3Bd1bb35602525` |
 
 This is the live deployment, made on 28 October 2026 from this code. The
 version submitted to Monad Metropolis is described in "Submitted version"
@@ -36,7 +37,22 @@ What changed since:
 - A stuck randomness request can be cancelled by its player after 15 s, by anyone else after 10 min.
 - `epochHours` is 36.
 - The leaderboard is on chain.
+- Game keys: sign once, then play without a wallet pop-up per action.
+- The page buys the next random word and records finished runs automatically.
+- Leaderboard nicknames, kept in the separate `NameRegistry` contract.
 - Rebalance: `hpStart` 80, `hpCollapsePerDeath` 8, `pressureRampPerHour` 2.
+
+## Playing
+
+1. Connect a wallet and sign one message. The signature creates your **game
+   key**, a separate key that plays on your behalf.
+2. Top the game key up (about 3 MON is roughly one game).
+3. Play without a wallet pop-up per action. The page buys the next random word
+   and records finished runs automatically; both can be turned off.
+4. Optionally set a nickname for the leaderboard.
+
+The game key's private key lives only in the browser tab and holds only what
+you put on it; **Withdraw** sends the balance back to your wallet.
 
 ## Architecture
 
@@ -116,9 +132,9 @@ granularity.
   seconds (`outsiderTimeoutHours` 40 x 15). The wait is measured in real
   time, not game hours, because a request stuck at an epoch edge freezes the
   game clock. The Entropy fee is not refunded.
-- **Source verification of the 28 October deployment is pending** (the
-  Sourcify service used by MonadVision is down); the submitted 13 October
-  deployment is source-verified on MonadVision.
+- **Source verification.** The 28 October deployment was verified on Sourcify
+  (MonadVision) on 1 November 2026, and `NameRegistry` on 2 November 2026; the
+  submitted 13 October deployment is source-verified on MonadVision too.
 
 ## Stack
 

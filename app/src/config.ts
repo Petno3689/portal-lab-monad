@@ -8,3 +8,6 @@ export const MONAD_CHAIN_ID = 10143 as const;
 
 // Monad testnet RPC
 export const MONAD_RPC_URL = "https://testnet-rpc.monad.xyz" as const;
+
+// NameRegistry on Monad testnet (contracts/src/NameRegistry.sol): nicknames for game keys
+export const NAME_REGISTRY_ADDRESS = "0xe14b1389853aD407A5B72193Ae3Bd1bb35602525" as const;

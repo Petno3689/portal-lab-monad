@@ -48,6 +48,15 @@
 
 ## Команды
 
+> **Команды запускаются из `contracts/`; путь к инструментам задавать
+> абсолютным.** При запуске из корня репозитория относительные пути
+> `..\..\.tools\...` не срабатывали. Надёжнее один раз задать:
+> ```powershell
+> $F = "C:\Users\1\Desktop\LNP-Monad\.tools\foundry-win"
+> ```
+> и вызывать `& "$F\forge.exe"`, `& "$F\cast.exe"` вместо относительных путей
+> ниже.
+
 ### Шаг 0: Проверить баланс
 
 Нужно не менее 1,5 MON с запасом.
@@ -84,8 +93,11 @@ Linux: то же с `../../.tools/foundry/forge`.
 Команды, которые сработали 14 октября 2026. Сначала верифицировать **малый**
 контракт.
 
-28 октября 2026 сервер Sourcify у BlockVision не работал (HTTP 500): повторить
-позже или использовать Monadscan.
+28 октября 2026 сервер Sourcify у BlockVision не работал; к 1 ноября он
+восстановлен, и v2 верифицирована 1 ноября 2026. Результат проверять запросом
+`GET /v2/contract/10143/<адрес>` — ожидается `"match"`. Эндпоинт
+`/check-by-addresses` ненадёжен: он отвечает `false` даже для верифицированных
+контрактов. Запасной вариант — Monadscan.
 
 Параметры верификатора: `--verifier sourcify --verifier-url
 https://sourcify-api-monad.blockvision.org/`.
@@ -115,6 +127,40 @@ sourcify --verifier-url https://sourcify-api-monad.blockvision.org/
 Результат — статус `match` (совпадение рантайм-байткода); `exact match`
 недостижим при `bytecode_hash = "none"`. Запасной вариант — Monadscan
 (`--verifier etherscan`, нужен API-ключ).
+
+---
+
+## NameRegistry
+
+Отдельный контракт ников лидерборда (SPEC §15.9), без аргументов конструктора.
+Деплоится независимо от `PortalLab`. Из папки `contracts/`, `$F` — как в начале
+раздела «Команды».
+
+Примерка (без `--broadcast`, ничего не тратит):
+
+```powershell
+& "$F\forge.exe" script script/DeployNames.s.sol --rpc-url monad_testnet
+```
+
+Деплой:
+
+```powershell
+& "$F\forge.exe" script script/DeployNames.s.sol --rpc-url monad_testnet --broadcast --account portal-deployer
+```
+
+Верификация (аргументов конструктора нет):
+
+```powershell
+& "$F\forge.exe" verify-contract <адрес> src/NameRegistry.sol:NameRegistry --chain 10143 --verifier sourcify --verifier-url https://sourcify-api-monad.blockvision.org/
+```
+
+Затем записать адрес в `NAME_REGISTRY_ADDRESS` в `app/src/config.ts`. Новый
+реестр начинает без имён: ники прежнего реестра в нём не появятся.
+
+Текущий реестр: `0xe14b1389853aD407A5B72193Ae3Bd1bb35602525`, развёрнут
+2 ноября 2026 (блок 76339056, tx
+`0x757943f94794341d692c5083205d36ba75cd0a9fef2971af8598f55abfdef795`,
+805 138 газа, 0,08454 MON при 105 gwei), Sourcify `match`.
 
 ---
 
@@ -150,10 +196,11 @@ sourcify --verifier-url https://sourcify-api-monad.blockvision.org/
 
 ### Ручная проверка на цепочке
 
-**Не проверено на тестнете.**
+**Сами команды `cast` ниже на тестнете не прогонялись**; поведение контракта
+проверено через фронт.
 
 `startGame` и `act` — `payable`: к ним прикладывается плата Pyth, неиспользованное
-возвращается. Сначала прочитать плату:
+возвращается (измерено 1 ноября 2026, см. `docs/STATUS.md`). Сначала прочитать плату:
 
 ```powershell
 ..\..\.tools\foundry-win\cast.exe call <PythEntropySource> "fee()(uint256)" --rpc-url monad_testnet

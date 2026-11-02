@@ -5,6 +5,8 @@ import { Action, ActionNames, getCancelReasonMessage, portalTypeNames } from './
 
 const BACKFILL_CAP = 50;
 const MAX_LINES = 200;
+// Delay before retry n (0-based) of a failed run: 5 s, 10 s, then every 20 s.
+const retryDelay = (n: number) => (n === 0 ? 5_000 : n === 1 ? 10_000 : 20_000);
 
 // Events that carry the game hour they happened at.
 const HOUR_FIELD: Record<string, string> = {
@@ -103,8 +105,18 @@ export function Journal({ player, state }: Props) {
   const queue = useRef<Promise<void>>(Promise.resolve());
   const currentKey = useRef<string | null>(null);
   currentKey.current = key;
+  const failures = useRef(0);
+  const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearRetry = () => {
+    if (retryTimer.current !== null) clearTimeout(retryTimer.current);
+    retryTimer.current = null;
+  };
+  useEffect(() => clearRetry, []);
 
   useEffect(() => {
+    clearRetry();
+    failures.current = 0;
     if (!key || !player) {
       readTo.current = null;
       setEvents([]);
@@ -116,7 +128,8 @@ export function Journal({ player, state }: Props) {
       setEvents([]);
       setTruncated(false);
     }
-    queue.current = queue.current.then(async () => {
+    const run = () => {
+      queue.current = queue.current.then(async () => {
       if (currentKey.current !== key) return;
       try {
         const head = await publicClient.getBlockNumber({ cacheTime: 0 });
@@ -141,10 +154,20 @@ export function Journal({ player, state }: Props) {
           readTo.current = { key, block: head };
           if (fresh.length > 0) setEvents((prev) => [...prev, ...fresh]);
         }
+        failures.current = 0;
       } catch (error) {
         console.error('Journal read failed:', error);
+        // readTo is only set after a successful read, so a failed backfill is redone.
+        if (retryTimer.current === null && currentKey.current === key) {
+          retryTimer.current = setTimeout(() => {
+            retryTimer.current = null;
+            if (currentKey.current === key) run();
+          }, retryDelay(failures.current++));
+        }
       }
-    });
+      });
+    };
+    run();
   }, [key, player, state]);
 
   const lines = useMemo(() => buildLines(events), [events]);

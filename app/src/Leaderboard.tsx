@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { Address } from 'viem';
-import { readLeaderboard, type LeaderboardRow } from './contract';
+import { readLeaderboard, readNames, type LeaderboardRow } from './contract';
+import { displayName } from './names';
 
 const TOP = 20;
-
-const shorten = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;
+const UNAVAILABLE_AFTER = 3;
+// Delay before retry n (0-based): 5 s, 10 s, then every 20 s.
+const retryDelay = (n: number) => (n === 0 ? 5_000 : n === 1 ? 10_000 : 20_000);
 
 /** Hours survived desc, creatures rescued desc, earliest settlement first. */
 function compare(a: LeaderboardRow, b: LeaderboardRow): number {
@@ -23,21 +25,46 @@ interface Props {
 export function Leaderboard({ account, refreshKey }: Props) {
   const [rows, setRows] = useState<LeaderboardRow[] | null>(null);
   const [unavailable, setUnavailable] = useState(false);
+  const [names, setNames] = useState<Map<string, string>>(new Map());
 
   useEffect(() => {
     let live = true;
-    readLeaderboard()
-      .then((r) => {
-        if (!live) return;
-        setRows(r);
-        setUnavailable(false);
-      })
-      .catch((error) => {
-        console.error('Leaderboard not available:', error);
-        if (live) setUnavailable(true);
-      });
+    let failures = 0;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let nameTimer: ReturnType<typeof setTimeout> | null = null;
+    const load = () => {
+      readLeaderboard()
+        .then((r) => {
+          if (!live) return;
+          setRows(r);
+          setUnavailable(false);
+          loadNames(r);
+        })
+        .catch((error) => {
+          console.error('Leaderboard read failed:', error);
+          if (!live) return;
+          if (++failures >= UNAVAILABLE_AFTER) setUnavailable(true);
+          timer = setTimeout(load, retryDelay(failures - 1));
+        });
+    };
+    // A failure here keeps the addresses on screen and retries on the same schedule.
+    let nameFailures = 0;
+    const loadNames = (r: LeaderboardRow[]) => {
+      readNames(r.map((x) => x.player))
+        .then((n) => {
+          if (live) setNames(n);
+        })
+        .catch((error) => {
+          console.error('Names read failed:', error);
+          if (!live) return;
+          nameTimer = setTimeout(() => loadNames(r), retryDelay(nameFailures++));
+        });
+    };
+    load();
     return () => {
       live = false;
+      if (timer !== null) clearTimeout(timer);
+      if (nameTimer !== null) clearTimeout(nameTimer);
     };
   }, [refreshKey]);
 
@@ -48,7 +75,7 @@ export function Leaderboard({ account, refreshKey }: Props) {
   const row = (r: LeaderboardRow, rank: number) => (
     <tr key={r.player} className={r.player.toLowerCase() === me ? 'leaderboard-me' : undefined}>
       <td>{rank}</td>
-      <td className="leaderboard-address">{shorten(r.player)}</td>
+      <td className="leaderboard-address">{displayName(names.get(r.player.toLowerCase()) ?? '', r.player)}</td>
       <td>{String(r.run.hoursSurvived)}</td>
       <td>{String(r.run.creaturesRescued)}</td>
     </tr>
@@ -58,7 +85,7 @@ export function Leaderboard({ account, refreshKey }: Props) {
     <div className="leaderboard">
       <h3>Leaderboard</h3>
       {unavailable ? (
-        <p>Leaderboard is not available on this contract.</p>
+        <p>Leaderboard is not available right now.</p>
       ) : rows === null ? (
         <p>Loading…</p>
       ) : sorted.length === 0 ? (

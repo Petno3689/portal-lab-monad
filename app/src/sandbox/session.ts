@@ -13,6 +13,7 @@ import { Refusal, type Action } from '@shared/types';
 import { act, needsWord, resolve, startGame, sync, view, type EngineState, type LogEntry } from './engine';
 import { VirtualClock } from './clock';
 import type { Call, ParamSet, PresetName } from './params';
+import { cloneVariants, defaultVariants, type VariantSet } from './variant/variants';
 
 export interface Delays {
   /** Click → transaction lands. */
@@ -53,6 +54,8 @@ export class Session {
   readonly clock: VirtualClock;
   readonly params: ParamSet;
   readonly preset: PresetName;
+  /** The rule variants the game was started with (all off: the mirror's rules). */
+  readonly variants: VariantSet;
   readonly startedAt: bigint;
   /** Delays in force for this game (changing the toggle affects the jobs scheduled afterwards). */
   delays: Delays;
@@ -66,15 +69,16 @@ export class Session {
   private endedAtMs: number | null = null;
 
   /** Throws InvalidConfigError for a configuration the contract's constructor would reject. */
-  constructor(params: ParamSet, preset: PresetName, delaysOn: boolean, deps: Deps = {}) {
+  constructor(params: ParamSet, preset: PresetName, delaysOn: boolean, deps: Deps = {}, variants: VariantSet = defaultVariants()) {
     this.params = params;
     this.preset = preset;
+    this.variants = cloneVariants(variants);
     this.delaysAtStart = delaysOn;
     this.delays = delaysOn ? CHAIN_DELAYS : NO_DELAYS;
     this.clock = deps.clock ?? new VirtualClock();
     this.randomWord = deps.randomWord ?? cryptoWord;
     const nowTs = this.clock.now();
-    this.state = startGame(params.config, params.types, nowTs, { buyFirstWord: true });
+    this.state = startGame(params.config, params.types, nowTs, { buyFirstWord: true, variants: this.variants });
     this.startedAt = this.state.player.game.startedAt;
     this.calls.push({ kind: 'start', nowTs, buyFirstWord: true });
     this.schedule();

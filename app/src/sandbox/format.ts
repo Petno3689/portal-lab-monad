@@ -45,8 +45,13 @@ export function range(lo: bigint, hi: bigint): string {
   return lo === hi ? lo.toString() : `${lo}–${hi}`;
 }
 
-export const energyOf = (p: Portal): string => range(p.energyLo, p.energyHi);
-export const stabilityOf = (p: Portal): string => range(p.stabilityLo, p.stabilityHi);
+/**
+ * A surveyed portal shows its live exact value: the survey closes the range once, and
+ * from then on Stabilize/Destabilize and the hourly degrade change only
+ * `stability`/`energy`, so the frozen range would lie. Unsurveyed: the range.
+ */
+export const energyOf = (p: Portal): string => (p.surveyed ? p.energy.toString() : range(p.energyLo, p.energyHi));
+export const stabilityOf = (p: Portal): string => (p.surveyed ? p.stability.toString() : range(p.stabilityLo, p.stabilityHi));
 export const creaturesOf = (p: Portal): string => (p.creaturesKnown ? p.creatures.toString() : range(p.creaturesLo, p.creaturesHi));
 
 export function refusalLabel(r: Refusal | 'ActionPending'): string {
@@ -77,7 +82,7 @@ export function logText(e: LogEntry): string {
     case 'wordPinned':
       return `Word pinned: epochs ${e.fromEpoch}–${e.toEpoch}`;
     case 'portalCollapsed':
-      return `h${e.hour} · slot ${e.slot}: portal COLLAPSED — ${e.deaths} lost, −${e.hpLost} HP`;
+      return `h${e.hour} · slot ${e.slot}: portal COLLAPSED${e.earlyCollapse ? ' EARLY (stability 0)' : ''} — ${e.deaths} lost, −${e.hpLost} HP`;
     case 'portalSpawned':
       return `h${e.hour} · slot ${e.slot}: ${typeName(e.portalType)} portal appeared`;
     case 'portalSurveyed':
@@ -90,5 +95,9 @@ export function logText(e: LogEntry): string {
       return `slot ${e.slot}: rescuer recovering until h${e.readyAtHour}`;
     case 'gameOver':
       return `h${e.hour}: GAME OVER`;
+    case 'creatureArrived':
+      return `h${e.hour} · slot ${e.slot}: a creature arrived`;
+    case 'stabilityJump':
+      return `h${e.hour} · slot ${e.slot}: stability jump −${e.amount}`;
   }
 }

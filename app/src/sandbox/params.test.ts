@@ -16,9 +16,12 @@ import {
   parseInput,
   presetParams,
   saveCustom,
+  settingsFromJson,
+  settingsToJson,
   toJson,
   type Call,
 } from './params';
+import { defaultVariants } from './variant/variants';
 
 describe('field metadata', () => {
   it('covers every Config and PortalTypeParams field exactly once', () => {
@@ -208,5 +211,25 @@ describe('export', () => {
 
   it('toJson never throws on bigints', () => {
     expect(toJson({ a: 1n, b: [2n] })).toBe('{"a":"1","b":["2"]}');
+  });
+});
+
+describe('settings JSON and export with rule variants', () => {
+  it('rejects bad parameter JSON through the settings path too', () => {
+    expect(settingsFromJson('nope')).toEqual({ ok: false, error: 'not valid JSON' });
+    const ok = JSON.parse(settingsToJson(LIVE_V2, defaultVariants()));
+    ok.variants.stabilizeExtends.hours = '256';
+    expect(settingsFromJson(JSON.stringify(ok))).toMatchObject({ ok: false, error: expect.stringContaining('stabilizeExtends.hours') });
+  });
+
+  it('writes "variants" after "types" when the game has them', () => {
+    const v = defaultVariants();
+    v.pressurePerAction = { on: true, value: 50n };
+    const j = JSON.parse(
+      buildExport({ exportedAt: new Date(0), preset: 'Custom', startedAt: 1n, delays: false, params: LIVE_V2, variants: v, calls: [], log: [] }),
+    );
+    expect(Object.keys(j)).toEqual(['format', 'exportedAt', 'preset', 'startedAt', 'delays', 'config', 'types', 'variants', 'calls', 'log']);
+    expect(j.format).toBe(1);
+    expect(j.variants.pressurePerAction).toEqual({ on: true, value: '50' });
   });
 });

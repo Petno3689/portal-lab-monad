@@ -2,7 +2,7 @@ import { useEffect, useReducer, useState } from 'react';
 import { PortalStatus } from '@shared/types';
 import { view } from './engine';
 import { Board } from './Board';
-import { ParamsPanel } from './ParamsPanel';
+import { ParamsPanel, VariantsPanel } from './ParamsPanel';
 import { clockText, logText } from './format';
 import {
   buildExport,
@@ -16,6 +16,7 @@ import {
   type PresetName,
 } from './params';
 import { Session, summarize } from './session';
+import { anyVariantOn, cloneVariants, defaultVariants, loadVariants, saveVariants, variantProblem, type VariantSet } from './variant/variants';
 
 const TICK_MS = 250;
 const LOG_LINES = 30;
@@ -34,6 +35,7 @@ function download(name: string, text: string): void {
 export default function Sandbox() {
   const [preset, setPreset] = useState<PresetName>('Live v2');
   const [params, setParams] = useState<ParamSet>(() => presetParams('Live v2'));
+  const [variants, setVariants] = useState<VariantSet>(defaultVariants);
   const [delaysOn, setDelaysOn] = useState(true);
   const [session, setSession] = useState<Session | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
@@ -48,19 +50,27 @@ export default function Sandbox() {
   }, [session]);
 
   const problem = configProblem(params);
+  const vProblem = variantProblem(variants);
 
+  // A named preset is the live rules: every variant off. Custom restores the saved
+  // parameters and variants (they are saved together on every edit).
   const onPreset = (name: PresetName) => {
     setPreset(name);
     setParams(name === 'Custom' ? (loadCustom() ?? params) : presetParams(name));
+    setVariants(name === 'Custom' ? (loadVariants() ?? variants) : defaultVariants());
   };
-  const onEdit = (p: ParamSet) => {
+  const save = (p: ParamSet, v: VariantSet) => {
     setPreset('Custom');
     setParams(p);
+    setVariants(v);
     saveCustom(p);
+    saveVariants(v);
   };
+  const onEdit = (p: ParamSet) => save(p, variants);
+  const onEditVariants = (v: VariantSet) => save(params, v);
   const newGame = () => {
     try {
-      setSession(new Session(cloneParams(params), preset, delaysOn));
+      setSession(new Session(cloneParams(params), preset, delaysOn, {}, cloneVariants(variants)));
       setStartError(null);
     } catch (e) {
       setStartError(e instanceof Error ? e.message : String(e));
@@ -80,6 +90,7 @@ export default function Sandbox() {
         startedAt: session.startedAt,
         delays: session.delaysAtStart,
         params: session.params,
+        variants: session.variants,
         calls: session.calls,
         log: session.log,
       }),
@@ -92,7 +103,7 @@ export default function Sandbox() {
       <p className="hint">Offline simulation of the lab on the sandbox engine. No wallet, no network; the live game is not affected.</p>
 
       <div className="toolbar">
-        <button type="button" onClick={newGame} disabled={problem !== null}>
+        <button type="button" onClick={newGame} disabled={problem !== null || vProblem !== null}>
           New game
         </button>
         <button type="button" onClick={() => {
@@ -110,10 +121,14 @@ export default function Sandbox() {
         </button>
       </div>
       {startError && <p className="bad">Cannot start: {startError}</p>}
+      {vProblem && <p className="bad">Invalid rule variants: {vProblem}. “New game” is disabled.</p>}
 
       {session ? <Game session={session} /> : <p className="panel">Pick parameters below and press “New game”.</p>}
 
-      <ParamsPanel preset={preset} params={params} problem={problem} onPreset={onPreset} onEdit={onEdit} />
+      <div className="settings">
+        <ParamsPanel preset={preset} params={params} variants={variants} problem={problem} onPreset={onPreset} onEdit={onEdit} onPaste={save} />
+        <VariantsPanel variants={variants} problem={vProblem} onEdit={onEditVariants} />
+      </div>
     </main>
   );
 }
@@ -172,6 +187,7 @@ function Game({ session }: { session: Session }) {
         </div>
         <div className={`status status-${status.replace(/ /g, '-')}`}>
           {status}
+          {anyVariantOn(session.variants) && <span className="variant-badge"> · rule variants on</span>}
           {session.note && <span className="bad"> · {session.note}</span>}
         </div>
       </section>

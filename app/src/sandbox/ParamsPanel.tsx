@@ -7,15 +7,16 @@ import {
   TYPE_NAMES,
   clampTo,
   cloneParams,
-  paramsFromJson,
-  paramsToJson,
   parseInput,
+  settingsFromJson,
+  settingsToJson,
   type ConfigKey,
   type FieldMeta,
   type ParamSet,
   type PresetName,
   type TypeKey,
 } from './params';
+import { DEFAULT_VARIANTS, VARIANT_META, variantNumber, withVariant, type VariantSet } from './variant/variants';
 
 /** A whole-number input that commits valid values as they are typed and clamps on blur. */
 function NumInput({ meta, value, onCommit }: { meta: FieldMeta<string>; value: bigint; onCommit: (v: bigint) => void }) {
@@ -47,16 +48,62 @@ function NumInput({ meta, value, onCommit }: { meta: FieldMeta<string>; value: b
   );
 }
 
+/**
+ * One numeric field: label, slider (main fields with a range of at most 100 000),
+ * typed input, and the reference value next to it; highlighted when it differs.
+ */
+function FieldRow({
+  id,
+  meta,
+  value,
+  reference,
+  referenceLabel,
+  onCommit,
+}: {
+  id: string;
+  meta: FieldMeta<string>;
+  value: bigint;
+  reference: bigint;
+  referenceLabel: string;
+  onCommit: (v: bigint) => void;
+}) {
+  const lo = meta.sliderMin ?? meta.min;
+  const hi = meta.sliderMax ?? meta.max;
+  return (
+    <div className={`param${value !== reference ? ' diff' : ''}`}>
+      <label htmlFor={id}>{meta.label}</label>
+      {meta.main && hi - lo <= 100_000n && (
+        <input
+          id={id}
+          type="range"
+          min={Number(lo)}
+          max={Number(hi)}
+          value={Number(clampTo({ min: lo, max: hi }, value))}
+          onChange={(e) => onCommit(clampTo(meta, BigInt(e.target.value)))}
+        />
+      )}
+      <NumInput meta={meta} value={value} onCommit={onCommit} />
+      <span className="live">
+        {referenceLabel}: {reference.toString()}
+      </span>
+    </div>
+  );
+}
+
 interface Props {
   preset: PresetName;
   params: ParamSet;
+  /** The rule variants, for "Copy as JSON". */
+  variants: VariantSet;
   problem: string | null;
   onPreset: (name: PresetName) => void;
   /** Called with the edited set; the page switches the preset to Custom. */
   onEdit: (p: ParamSet) => void;
+  /** "Paste JSON": a parameter set and its rule variants (absent in the JSON: all off). */
+  onPaste: (p: ParamSet, v: VariantSet) => void;
 }
 
-export function ParamsPanel({ preset, params, problem, onPreset, onEdit }: Props) {
+export function ParamsPanel({ preset, params, variants, problem, onPreset, onEdit, onPaste }: Props) {
   const [json, setJson] = useState('');
   const [jsonMsg, setJsonMsg] = useState<string | null>(null);
 
@@ -78,32 +125,20 @@ export function ParamsPanel({ preset, params, problem, onPreset, onEdit }: Props
     onEdit(next);
   };
 
-  const row = (f: FieldMeta<ConfigKey>) => {
-    const value = params.config[f.key];
-    const live = LIVE_V2.config[f.key];
-    const lo = f.sliderMin ?? f.min;
-    const hi = f.sliderMax ?? f.max;
-    return (
-      <div key={f.key} className={`param${value !== live ? ' diff' : ''}`}>
-        <label htmlFor={`p-${f.key}`}>{f.label}</label>
-        {f.main && hi - lo <= 100_000n && (
-          <input
-            id={`p-${f.key}`}
-            type="range"
-            min={Number(lo)}
-            max={Number(hi)}
-            value={Number(clampTo({ min: lo, max: hi }, value))}
-            onChange={(e) => setConfig(f.key, clampTo(f, BigInt(e.target.value)))}
-          />
-        )}
-        <NumInput meta={f} value={value} onCommit={(v) => setConfig(f.key, v)} />
-        <span className="live">Live v2: {live.toString()}</span>
-      </div>
-    );
-  };
+  const row = (f: FieldMeta<ConfigKey>) => (
+    <FieldRow
+      key={f.key}
+      id={`p-${f.key}`}
+      meta={f}
+      value={params.config[f.key]}
+      reference={LIVE_V2.config[f.key]}
+      referenceLabel="Live v2"
+      onCommit={(v) => setConfig(f.key, v)}
+    />
+  );
 
   const copy = async () => {
-    const text = paramsToJson(params);
+    const text = settingsToJson(params, variants);
     setJson(text);
     try {
       await navigator.clipboard.writeText(text);
@@ -123,10 +158,10 @@ export function ParamsPanel({ preset, params, problem, onPreset, onEdit }: Props
         return;
       }
     }
-    const r = paramsFromJson(text);
+    const r = settingsFromJson(text);
     if (r.ok) {
-      onEdit(r.params);
-      setJsonMsg('Parameters loaded.');
+      onPaste(r.params, r.variants);
+      setJsonMsg('Parameters and rule variants loaded.');
     } else {
       setJsonMsg(`Rejected: ${r.error}`);
     }
@@ -198,6 +233,45 @@ export function ParamsPanel({ preset, params, problem, onPreset, onEdit }: Props
         {jsonMsg && <span className="hint">{jsonMsg}</span>}
       </div>
       <textarea rows={4} value={json} onChange={(e) => setJson(e.target.value)} placeholder="Parameter JSON" aria-label="Parameter JSON" />
+    </section>
+  );
+}
+
+/** The "Rule variants" panel: sandbox-only rule changes, applied on "New game". */
+export function VariantsPanel({ variants, problem, onEdit }: { variants: VariantSet; problem: string | null; onEdit: (v: VariantSet) => void }) {
+  return (
+    <section className="panel variants">
+      <h2>Rule variants</h2>
+      <p className="hint">Candidate rule changes, sandbox only. Applied on “New game”; all off is the live contract’s rules.</p>
+      {problem && <p className="bad">Invalid rule variants: {problem}. “New game” is disabled.</p>}
+      {VARIANT_META.map((m) => {
+        const on = variants[m.id].on;
+        return (
+          <div key={m.id} className={`variant${on ? ' on' : ''}`}>
+            <label className="check variant-head">
+              <input type="checkbox" checked={on} onChange={(e) => onEdit(withVariant(variants, m.id, 'on', e.target.checked))} />
+              <strong>{m.label}</strong>
+            </label>
+            <p className="hint">{m.description}</p>
+            {m.fields.map((f) => {
+              const value = variantNumber(variants, m.id, f.key);
+              return (
+                <FieldRow
+                  key={f.key}
+                  id={`v-${m.id}-${f.key}`}
+                  meta={f}
+                  value={value}
+                  reference={variantNumber(DEFAULT_VARIANTS, m.id, f.key)}
+                  referenceLabel="default"
+                  onCommit={(v) => {
+                    if (v !== value) onEdit(withVariant(variants, m.id, f.key, v));
+                  }}
+                />
+              );
+            })}
+          </div>
+        );
+      })}
     </section>
   );
 }

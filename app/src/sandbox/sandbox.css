@@ -369,3 +369,50 @@ textarea {
     margin-left: 0;
   }
 }
+
+/* Parameters and rule variants side by side on wide screens. */
+.settings {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  gap: 0 12px;
+  align-items: start;
+}
+
+@media (max-width: 1100px) {
+  .settings {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.settings .param-list {
+  grid-template-columns: repeat(auto-fill, minmax(min(420px, 100%), 1fr));
+}
+
+.variants .variant {
+  border-top: 1px solid var(--line);
+  padding: 8px 0 4px;
+}
+
+.variants .variant:not(.on) .param {
+  opacity: 0.6;
+}
+
+.variants .variant .hint {
+  margin: 2px 0 4px;
+}
+
+.variants .param,
+.variants .param:not(:has(input[type='range'])) {
+  grid-template-columns: minmax(7rem, 10rem) minmax(60px, 1fr) 5.5rem 5.5rem;
+}
+
+.variant-badge {
+  color: var(--accent);
+}
+
+@media (max-width: 700px) {
+  .variants .param,
+  .variants .param:not(:has(input[type='range'])) {
+    grid-template-columns: 1fr auto;
+  }
+}

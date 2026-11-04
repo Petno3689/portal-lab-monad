@@ -38,7 +38,8 @@
  *
  * `state.log` is append-only: one entry per thing that happened, in the order the
  * contract emits its events (SPEC §15.4: catch-up collapses, then catch-up spawns,
- * then the action's own events). Entries are plain JSON-serialisable objects:
+ * then the action's own events; with an hourly rule variant on, its arrivals and
+ * jumps follow the spawns). Entries are plain JSON-serialisable objects:
  *   - every integer (bigint in the engine) is written as a decimal STRING;
  *   - enums (Action, Refusal, PortalType) are written as their integer values, as
  *     numbers; the one engine-only refusal is the string 'ActionPending';
@@ -50,6 +51,16 @@
  * trace there). A paid `sync` logs no deferral entries — only the `wordPinned` and
  * the catch-up it caused. A paid start logs a `deferralRequested` (crossing) at its
  * commit; its `resolve` logs the `wordPinned` and the catch-up, as a paid sync does.
+ *
+ * ── Rule variants (sandbox only) ────────────────────────────────────────────
+ *
+ * `startGame` may be given a variant set (variant/variants.ts). With none, or with
+ * every variant off, `state.variants` stays unset and this module calls the plain
+ * mirror in shared/ — the contract. With any variant on, every catch-up goes through
+ * the fork in variant/time.ts and every `applyAction` through variant/effects.ts, and
+ * each performed action adds the V6 pressure. Variant-only log entries:
+ * `creatureArrived`, `stabilityJump`, and `earlyCollapse: true` on a
+ * `portalCollapsed` (the field is absent otherwise).
  */
 
 import {
@@ -79,6 +90,9 @@ import {
   type PortalTypeParams,
 } from '@shared/types';
 import type { TypeTable } from './presets';
+import { addActionPressure, applyActionVariant, type VOutcome } from './variant/effects';
+import { catchUpVariant, type HourlyEvent, type VCollapse } from './variant/time';
+import { anyVariantOn, cloneVariants, type VariantSet } from './variant/variants';
 
 // ── State ────────────────────────────────────────────────────────────────────
 
@@ -106,6 +120,11 @@ export interface EngineState {
    */
   nextRequestId: bigint;
   log: LogEntry[];
+  /**
+   * The rule variants of this game; unset when none is on — then every rule is the
+   * mirror's (see "Rule variants" at the top).
+   */
+  variants?: VariantSet;
 }
 
 /** A refusal: a rules Refusal, or ActionPending — a distinct custom error on chain. */
@@ -176,13 +195,20 @@ export type LogEntry =
     }
   /** Epochs [fromEpoch, toEpoch) were pinned to a new word. */
   | { kind: 'wordPinned'; ts: Dec; fromEpoch: Dec; toEpoch: Dec }
-  | { kind: 'portalCollapsed'; ts: Dec; slot: Dec; deaths: Dec; hpLost: Dec; hour: Dec }
+  | { kind: 'portalCollapsed'; ts: Dec; slot: Dec; deaths: Dec; hpLost: Dec; hour: Dec; earlyCollapse?: true }
   | { kind: 'portalSpawned'; ts: Dec; slot: Dec; portalType: PortalType; nameIndex: Dec; hour: Dec }
   | { kind: 'portalSurveyed'; ts: Dec; slot: Dec; precise: boolean; hour: Dec }
   | { kind: 'portalClosed'; ts: Dec; slot: Dec; deaths: Dec; hpLost: Dec; hour: Dec }
   | { kind: 'creaturesRescued'; ts: Dec; slot: Dec; count: Dec; hpGained: Dec; hour: Dec }
   | { kind: 'rescuerRecovering'; ts: Dec; slot: Dec; readyAtHour: Dec }
-  | { kind: 'gameOver'; ts: Dec; hour: Dec };
+  | { kind: 'gameOver'; ts: Dec; hour: Dec }
+  /** V1: a creature arrived in the portal in `slot`. */
+  | { kind: 'creatureArrived'; ts: Dec; slot: Dec; hour: Dec }
+  /** V2: the portal in `slot` lost `amount` stability (the drawn amount, before the floor at 0). */
+  | { kind: 'stabilityJump'; ts: Dec; slot: Dec; amount: Dec; hour: Dec };
+
+/** A catch-up result of either engine: the fork adds the early flags and the hourly events. */
+type AnyCatchUp = CatchUpResult & { hourly?: readonly HourlyEvent[] };
 
 const dec = (x: bigint): Dec => x.toString();
 
@@ -196,12 +222,18 @@ class Emitter {
   }
 
   /** Mirror of PortalLab._emitCollapses and _emitSpawns, in that order. */
-  catchUp(r: CatchUpResult): void {
+  catchUp(r: AnyCatchUp): void {
     for (const e of r.events) {
-      this.entries.push({ kind: 'portalCollapsed', ts: this.ts, slot: dec(e.slot), deaths: dec(e.deaths), hpLost: dec(e.hpLost), hour: dec(e.atHour) });
+      const entry: LogEntry = { kind: 'portalCollapsed', ts: this.ts, slot: dec(e.slot), deaths: dec(e.deaths), hpLost: dec(e.hpLost), hour: dec(e.atHour) };
+      if ((e as Partial<VCollapse>).early) entry.earlyCollapse = true;
+      this.entries.push(entry);
     }
     for (const s of r.spawns) {
       this.entries.push({ kind: 'portalSpawned', ts: this.ts, slot: dec(s.slot), portalType: s.portalType, nameIndex: dec(s.nameIndex), hour: dec(s.atHour) });
+    }
+    for (const h of r.hourly ?? []) {
+      if (h.kind === 'arrival') this.entries.push({ kind: 'creatureArrived', ts: this.ts, slot: dec(h.slot), hour: dec(h.atHour) });
+      else this.entries.push({ kind: 'stabilityJump', ts: this.ts, slot: dec(h.slot), amount: dec(h.amount), hour: dec(h.atHour) });
     }
   }
 
@@ -228,6 +260,8 @@ class Emitter {
       this.entries.push({ kind: 'portalClosed', ts: this.ts, slot: dec(slot), deaths: dec(o.deaths), hpLost: dec(o.hpLost), hour: dec(hour) });
     }
     if (o.rescuerBlindMiss) this.rescuerRecovering(slot, o.rescuerReadyAtHour);
+    const rest = (o as Partial<VOutcome>).rescuerRestReadyAt;
+    if (rest) this.rescuerRecovering(slot, rest); // V5
   }
 
   rescuerRecovering(slot: bigint, readyAtHour: bigint): void {
@@ -299,10 +333,38 @@ function idlePending(coveredEpochs: bigint): Pending {
 }
 
 /** Mirror of PortalLab._catchUpFree (lines 1339–1355): one stored word, one stored limit. */
-function catchUpFree(state: EngineState, nowTs: bigint): CatchUpResult {
+function catchUpFree(state: EngineState, nowTs: bigint): AnyCatchUp {
   const rec = state.player;
   const covered = rec.pending.coveredEpochs;
-  return catchUp(rec.game, rec.portals, state.config, state.types, rec.epochWord, rec.epochWord, covered, covered, nowTs);
+  return catchUpAny(state, rec.game, rec.portals, rec.epochWord, rec.epochWord, covered, covered, nowTs);
+}
+
+/** The catch-up of this game: the mirror's, or the variant fork's when variants are on. */
+function catchUpAny(
+  state: EngineState,
+  g: Game,
+  portals: readonly Portal[],
+  oldWord: bigint,
+  newWord: bigint,
+  storedCovered: bigint,
+  maxCovered: bigint,
+  nowTs: bigint,
+): AnyCatchUp {
+  if (state.variants) {
+    return catchUpVariant(g, portals, state.config, state.types, state.variants, oldWord, newWord, storedCovered, maxCovered, nowTs);
+  }
+  return catchUp(g, portals, state.config, state.types, oldWord, newWord, storedCovered, maxCovered, nowTs);
+}
+
+/** The effect of an allowed action: the mirror's, or the variant fork's (V3–V5). */
+function applyActionAny(state: EngineState, g: Game, p: Portal, tp: PortalTypeParams, a: Action): { game: Game; portal: Portal; outcome: Outcome } {
+  if (state.variants) return applyActionVariant(g, p, state.config, tp, a, state.variants);
+  return applyAction(g, p, state.config, tp, a);
+}
+
+/** V6: the pressure a performed action adds (none without variants). */
+function actionPressure(state: EngineState, g: Game): Game {
+  return state.variants ? addActionPressure(g, state.variants) : g;
 }
 
 /** Mirror of PortalLab._epochOf (lines 1331–1334). */
@@ -379,6 +441,13 @@ export interface StartOptions {
    * front always does. False starts with no word, as a feeless call does.
    */
   buyFirstWord: boolean;
+  /** Rule variants (sandbox only). Absent or all off: the mirror's rules. */
+  variants?: VariantSet;
+  /**
+   * Run on the variant fork even when every variant is off. For the tests that prove
+   * the fork with everything off equals the mirror; the page never sets it.
+   */
+  forceVariantEngine?: boolean;
 }
 
 /**
@@ -431,6 +500,7 @@ export function startGame(config: Config, types: TypeTable, nowTs: bigint, opts:
     nextRequestId: 1n,
     log: em.entries,
   };
+  if (opts.variants && (opts.forceVariantEngine || anyVariantOn(opts.variants))) fresh.variants = cloneVariants(opts.variants);
   if (!opts.buyFirstWord) return fresh;
 
   // The paid branch (lines 325–344): buy the first word now, exactly like a paid
@@ -457,6 +527,12 @@ export function startGame(config: Config, types: TypeTable, nowTs: bigint, opts:
 /** The world as the front draws it: exactly shared/preview (free, capped at the pinned edge). */
 export function view(state: EngineState, nowTs: bigint): PreviewResult {
   const rec = state.player;
+  if (state.variants) {
+    // The same argument pairing as shared/preview, on the fork.
+    const covered = rec.pending.coveredEpochs;
+    const r = catchUpAny(state, rec.game, rec.portals, rec.epochWord, rec.epochWord, covered, covered, nowTs);
+    return { game: r.game, portals: r.portals, cappedShort: r.cappedShort };
+  }
   return preview(
     { game: rec.game, portals: rec.portals, epochWord: rec.epochWord, coveredEpochs: rec.pending.coveredEpochs },
     state.config,
@@ -606,6 +682,7 @@ function actInner(state: EngineState, slot: bigint, action: Action, nowTs: bigin
   if (action === Action.SendObserver && !p.surveyed) {
     p = { ...p, observerInside: true, surveyPending: true };
     g = { ...g, observersFree: subChecked(g.observersFree, 1n), rngNonce: addChecked(g.rngNonce, 1n, 32) };
+    g = actionPressure(state, g);
     portals = setPortal(portals, slot, p);
     const pend: Pending = {
       active: true,
@@ -629,6 +706,7 @@ function actInner(state: EngineState, slot: bigint, action: Action, nowTs: bigin
   // ── Two-phase blind rescue COMMIT (lines 508–550) ──
   if (action === Action.SendRescuer && !p.creaturesKnown) {
     g = { ...g, rngNonce: addChecked(g.rngNonce, 1n, 32), rescuersFree: subChecked(g.rescuersFree, 1n) };
+    g = actionPressure(state, g);
     p = { ...p, rescuerPending: true };
     portals = setPortal(portals, slot, p);
     const pend: Pending = {
@@ -651,9 +729,9 @@ function actInner(state: EngineState, slot: bigint, action: Action, nowTs: bigin
   }
 
   // ── Single-phase path (lines 553–593) ──
-  const fx = applyAction(g, p, c, state.types[p.portalType], action);
+  const fx = applyActionAny(state, g, p, state.types[p.portalType], action);
   portals = setPortal(portals, slot, fx.portal);
-  const death = markDeath(fx.game);
+  const death = markDeath(actionPressure(state, fx.game));
   g = death.game;
 
   const em = new Emitter(nowTs);
@@ -773,7 +851,7 @@ function revealCrossing(state: EngineState, pend: Pending, word: bigint, nowTs: 
   const storedCovered = pend.coveredEpochs;
   const newCovered = epochOf(c, rec.game.startedAt, nowTs) + 1n;
 
-  const r = catchUp(rec.game, rec.portals, c, state.types, oldWord, word, storedCovered, newCovered, nowTs);
+  const r = catchUpAny(state, rec.game, rec.portals, oldWord, word, storedCovered, newCovered, nowTs);
   let g = r.game;
   let portals = r.portals;
 
@@ -836,6 +914,7 @@ function performDeferredAction(
     // _applyEpochCrossingSurvey: the observer walks in and the survey is read at once.
     p = { ...p, observerInside: true };
     g = { ...g, observersFree: subChecked(g.observersFree, 1n), rngNonce: addChecked(g.rngNonce, 1n, 32) };
+    g = actionPressure(state, g);
     const sv = survey(p, c, tp, word);
     portals = setPortal(portals, slot, sv.portal);
     em.actionPerformed(slot, action, powerSpent, atHour, powerBefore, g);
@@ -847,6 +926,7 @@ function performDeferredAction(
   if (action === Action.SendRescuer && !p.creaturesKnown) {
     // _applyEpochCrossingBlindRescue: the commit touched nothing; the rescuer leaves now.
     g = { ...g, rngNonce: addChecked(g.rngNonce, 1n, 32), rescuersFree: subChecked(g.rescuersFree, 1n) };
+    g = actionPressure(state, g);
     const fx = applyBlindRescuerReveal(g, p, c, word);
     portals = setPortal(portals, slot, fx.portal);
     const death = markDeath(fx.game);
@@ -859,9 +939,9 @@ function performDeferredAction(
   }
 
   // _applyGenericDeferredAction.
-  const fx = applyAction(g, p, c, tp, action);
+  const fx = applyActionAny(state, g, p, tp, action);
   portals = setPortal(portals, slot, fx.portal);
-  const death = markDeath(fx.game);
+  const death = markDeath(actionPressure(state, fx.game));
   g = death.game;
   em.actionPerformed(slot, action, powerSpent, atHour, powerBefore, g);
   em.outcome(slot, action, fx.outcome, atHour);

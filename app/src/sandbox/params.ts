@@ -14,6 +14,7 @@
  *     "delays": true,                               // "Chain-like delays" was on at the start
  *     "config":  { "<Config field>": "<decimal>", ... },
  *     "types":   [ { "<PortalTypeParams field>": "<decimal>", "surveyPrecise": true }, ... ],  // 5, enum order
+ *     "variants": { "<VariantId>": { "on": false, "<number>": "<decimal>", ... }, ... },  // rule variants
  *     "calls":   [ Call, ... ],                     // every engine call, in order — replayable
  *     "log":     [ LogEntry, ... ]                  // engine.ts state.log, verbatim
  *   }
@@ -25,14 +26,20 @@
  *
  * Every bigint is a decimal string; enums are their integer values (numbers);
  * `surveyPrecise` stays a boolean. Replaying `calls` on the engine with the same
- * config/types reproduces `log` exactly.
+ * config/types/variants reproduces `log` exactly.
  *
- * The "Copy as JSON" parameter set uses the same encoding: { config, types }.
+ * "variants" (variant/variants.ts, `variantsToPlain`) was added without bumping the
+ * format: an export WITHOUT the key — every export made before rule variants existed —
+ * means every variant off, i.e. the mirror's rules. The page always writes it.
+ *
+ * The "Copy as JSON" parameter set uses the same encoding: { config, types, variants }
+ * (a pasted set without "variants" turns every variant off).
  */
 
 import type { Action, Config, PortalTypeParams } from '@shared/types';
 import { InvalidConfigError, validateConfig, type LogEntry } from './engine';
 import { ENERGY_X2, LIVE_V2, type Preset, type TypeTable } from './presets';
+import { variantsFromPlain, variantsToPlain, type VariantSet } from './variant/variants';
 
 // ── Parameter sets ───────────────────────────────────────────────────────────
 
@@ -231,6 +238,23 @@ export function paramsFromJson(text: string): ParseResult {
   return { ok: true, params: { config, types: types as unknown as TypeTable } };
 }
 
+/** "Copy as JSON": the parameter set and the rule variants. */
+export function settingsToJson(p: ParamSet, v: VariantSet): string {
+  return toJson({ config: p.config, types: p.types, variants: variantsToPlain(v) }, 2);
+}
+
+export type SettingsParse = { ok: true; params: ParamSet; variants: VariantSet } | { ok: false; error: string };
+
+/** "Paste JSON": a parameter set with optional "variants" (absent: all off). */
+export function settingsFromJson(text: string): SettingsParse {
+  const r = paramsFromJson(text);
+  if (!r.ok) return r;
+  const raw: unknown = JSON.parse(text);
+  const v = variantsFromPlain(isRecord(raw) ? raw.variants : undefined);
+  if (!v.ok) return v;
+  return { ok: true, params: r.params, variants: v.variants };
+}
+
 // ── Persistence (localStorage, never required) ───────────────────────────────
 
 export const STORAGE_KEY = 'sandbox.customParams.v1';
@@ -281,6 +305,8 @@ export interface ExportInput {
   params: ParamSet;
   calls: readonly Call[];
   log: readonly LogEntry[];
+  /** The game's rule variants; omitted from the file when not given (= all off). */
+  variants?: VariantSet;
 }
 
 export function exportFileName(startedAt: bigint): string {
@@ -297,6 +323,7 @@ export function buildExport(i: ExportInput): string {
       delays: i.delays,
       config: i.params.config,
       types: i.params.types,
+      ...(i.variants ? { variants: variantsToPlain(i.variants) } : {}),
       calls: i.calls,
       log: i.log,
     },

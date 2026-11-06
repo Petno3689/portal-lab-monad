@@ -82,7 +82,7 @@ export function logText(e: LogEntry): string {
     case 'wordPinned':
       return `Word pinned: epochs ${e.fromEpoch}–${e.toEpoch}`;
     case 'portalCollapsed':
-      return `h${e.hour} · slot ${e.slot}: portal COLLAPSED${e.earlyCollapse ? ' EARLY (stability 0)' : ''} — ${e.deaths} lost, −${e.hpLost} HP`;
+      return `h${e.hour} · slot ${e.slot}: portal COLLAPSED${e.earlyCollapse ? (e.critical ? ' EARLY (stability 0, critical phase ran out)' : ' EARLY (stability 0)') : ''} — ${e.deaths} lost, −${e.hpLost} HP`;
     case 'portalSpawned':
       return `h${e.hour} · slot ${e.slot}: ${typeName(e.portalType)} portal appeared`;
     case 'portalSurveyed':
@@ -99,5 +99,9 @@ export function logText(e: LogEntry): string {
       return `h${e.hour} · slot ${e.slot}: a creature arrived`;
     case 'stabilityJump':
       return `h${e.hour} · slot ${e.slot}: stability jump −${e.amount}`;
+    case 'portalCritical':
+      return `h${e.hour} · slot ${e.slot}: portal CRITICAL (stability 0) — collapses at h${e.untilHour} unless stabilized`;
+    case 'portalStabilized':
+      return `h${e.hour} · slot ${e.slot}: portal left the critical phase`;
   }
 }

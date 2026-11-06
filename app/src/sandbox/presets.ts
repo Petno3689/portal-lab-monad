@@ -146,3 +146,13 @@ export const ENERGY_X2: Preset = {
   config: { ...LIVE_V2.config, powerRegenPerHour: LIVE_V2.config.powerRegenPerHour * 2n },
   types: LIVE_V2.types.map((t) => ({ ...t })) as unknown as TypeTable,
 };
+
+/**
+ * "Best 4 Nov": the owner's best settings after the play-test of 4 November 2026 —
+ * LIVE_V2 with power regeneration 15 per hour and 10 000 → 3 500 pressure per portal.
+ * Its rule variants are `best4NovVariants()` (variant/variants.ts).
+ */
+export const BEST_4_NOV: Preset = {
+  config: { ...LIVE_V2.config, powerRegenPerHour: 15n, spawnCostUnits: 3500n },
+  types: LIVE_V2.types.map((t) => ({ ...t })) as unknown as TypeTable,
+};

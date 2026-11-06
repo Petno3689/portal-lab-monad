@@ -11,6 +11,7 @@ import {
   exportFileName,
   loadCustom,
   presetParams,
+  presetVariants,
   saveCustom,
   type ParamSet,
   type PresetName,
@@ -52,12 +53,13 @@ export default function Sandbox() {
   const problem = configProblem(params);
   const vProblem = variantProblem(variants);
 
-  // A named preset is the live rules: every variant off. Custom restores the saved
-  // parameters and variants (they are saved together on every edit).
+  // A named preset sets both the parameters and the variants: "Live v2" and
+  // "Energy ×2" are the live rules (every variant off), "Best 4 Nov" has its own.
+  // Custom restores the saved parameters and variants (saved together on every edit).
   const onPreset = (name: PresetName) => {
     setPreset(name);
     setParams(name === 'Custom' ? (loadCustom() ?? params) : presetParams(name));
-    setVariants(name === 'Custom' ? (loadVariants() ?? variants) : defaultVariants());
+    setVariants(name === 'Custom' ? (loadVariants() ?? variants) : presetVariants(name));
   };
   const save = (p: ParamSet, v: VariantSet) => {
     setPreset('Custom');

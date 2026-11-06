@@ -9,7 +9,7 @@
  *   {
  *     "format": 1,
  *     "exportedAt": "2026-11-03T12:00:00.000Z",   // ISO-8601, real time of the export
- *     "preset": "Live v2" | "Energy ×2" | "Custom", // name selected when the game started
+ *     "preset": "Live v2" | "Energy ×2" | "Best 4 Nov" | "Custom", // name selected when the game started
  *     "startedAt": "1793700000",                    // virtual nowTs of the start (decimal)
  *     "delays": true,                               // "Chain-like delays" was on at the start
  *     "config":  { "<Config field>": "<decimal>", ... },
@@ -30,7 +30,9 @@
  *
  * "variants" (variant/variants.ts, `variantsToPlain`) was added without bumping the
  * format: an export WITHOUT the key — every export made before rule variants existed —
- * means every variant off, i.e. the mirror's rules. The page always writes it.
+ * means every variant off, i.e. the mirror's rules. The page always writes it. Likewise
+ * a variant missing from the object is off with its default numbers: an export made
+ * before V2b ("criticalPhase") existed reads as V2b off.
  *
  * The "Copy as JSON" parameter set uses the same encoding: { config, types, variants }
  * (a pasted set without "variants" turns every variant off).
@@ -38,14 +40,14 @@
 
 import type { Action, Config, PortalTypeParams } from '@shared/types';
 import { InvalidConfigError, validateConfig, type LogEntry } from './engine';
-import { ENERGY_X2, LIVE_V2, type Preset, type TypeTable } from './presets';
-import { variantsFromPlain, variantsToPlain, type VariantSet } from './variant/variants';
+import { BEST_4_NOV, ENERGY_X2, LIVE_V2, type Preset, type TypeTable } from './presets';
+import { best4NovVariants, defaultVariants, variantsFromPlain, variantsToPlain, type VariantSet } from './variant/variants';
 
 // ── Parameter sets ───────────────────────────────────────────────────────────
 
 export type ParamSet = Preset;
 
-export const PRESET_NAMES = ['Live v2', 'Energy ×2', 'Custom'] as const;
+export const PRESET_NAMES = ['Live v2', 'Energy ×2', 'Best 4 Nov', 'Custom'] as const;
 export type PresetName = (typeof PRESET_NAMES)[number];
 
 export function cloneParams(p: ParamSet): ParamSet {
@@ -57,7 +59,12 @@ export function cloneParams(p: ParamSet): ParamSet {
 
 /** The parameter set of a named preset; `Custom` has none of its own (returns Live v2). */
 export function presetParams(name: PresetName): ParamSet {
-  return cloneParams(name === 'Energy ×2' ? ENERGY_X2 : LIVE_V2);
+  return cloneParams(name === 'Energy ×2' ? ENERGY_X2 : name === 'Best 4 Nov' ? BEST_4_NOV : LIVE_V2);
+}
+
+/** The rule variants a named preset sets: all off, except for "Best 4 Nov" (`Custom`: all off too). */
+export function presetVariants(name: PresetName): VariantSet {
+  return name === 'Best 4 Nov' ? best4NovVariants() : defaultVariants();
 }
 
 // ── Field metadata ───────────────────────────────────────────────────────────

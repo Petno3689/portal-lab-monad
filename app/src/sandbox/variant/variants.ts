@@ -10,6 +10,9 @@
  *   V1 creatureArrivals      each whole game hour every open portal may gain a creature
  *   V2 stabilityHealth       each whole game hour every open portal may lose stability;
  *                            a portal whose stability reaches 0 collapses early
+ *   V2b criticalPhase        (only with V2) a portal at the V2 collapse condition turns
+ *                            critical for some hours first; it collapses only if the
+ *                            condition still holds when they run out
  *   V3 stabilizeExtends      Stabilize also adds hours to hoursToCollapse
  *   V4 rescuerTakesObserver  Evacuate also brings the observer back
  *   V5 rescuerRestAfterEvac  after an Evacuate the rescuer rests for some hours
@@ -30,6 +33,8 @@ import type { FieldMeta } from '../params';
 export interface VariantSet {
   creatureArrivals: { on: boolean; chancePct: bigint; maxPerPortal: bigint };
   stabilityHealth: { on: boolean; jumpChancePct: bigint; jumpMin: bigint; jumpMax: bigint };
+  /** V2b: meaningful only with V2 on; with V2 off it changes nothing. */
+  criticalPhase: { on: boolean; hours: bigint };
   stabilizeExtends: { on: boolean; hours: bigint };
   rescuerTakesObserver: { on: boolean };
   rescuerRestAfterEvac: { on: boolean; hours: bigint };
@@ -42,6 +47,7 @@ export type VariantId = keyof VariantSet;
 export const VARIANT_IDS: readonly VariantId[] = [
   'creatureArrivals',
   'stabilityHealth',
+  'criticalPhase',
   'stabilizeExtends',
   'rescuerTakesObserver',
   'rescuerRestAfterEvac',
@@ -53,6 +59,7 @@ export function defaultVariants(): VariantSet {
   return {
     creatureArrivals: { on: false, chancePct: 15n, maxPerPortal: 6n },
     stabilityHealth: { on: false, jumpChancePct: 10n, jumpMin: 10n, jumpMax: 30n },
+    criticalPhase: { on: false, hours: 2n },
     stabilizeExtends: { on: false, hours: 3n },
     rescuerTakesObserver: { on: false },
     rescuerRestAfterEvac: { on: false, hours: 4n },
@@ -62,10 +69,27 @@ export function defaultVariants(): VariantSet {
 
 export const DEFAULT_VARIANTS: VariantSet = defaultVariants();
 
+/**
+ * The variants of the "Best 4 Nov" preset: the owner's best settings after the
+ * play-test of 4 November 2026 (V1–V6 on, V2b off).
+ */
+export function best4NovVariants(): VariantSet {
+  return {
+    creatureArrivals: { on: true, chancePct: 15n, maxPerPortal: 6n },
+    stabilityHealth: { on: true, jumpChancePct: 10n, jumpMin: 10n, jumpMax: 30n },
+    criticalPhase: { on: false, hours: 2n },
+    stabilizeExtends: { on: true, hours: 2n },
+    rescuerTakesObserver: { on: true },
+    rescuerRestAfterEvac: { on: true, hours: 2n },
+    pressurePerAction: { on: true, value: 250n },
+  };
+}
+
 export function cloneVariants(v: VariantSet): VariantSet {
   return {
     creatureArrivals: { ...v.creatureArrivals },
     stabilityHealth: { ...v.stabilityHealth },
+    criticalPhase: { ...v.criticalPhase },
     stabilizeExtends: { ...v.stabilizeExtends },
     rescuerTakesObserver: { ...v.rescuerTakesObserver },
     rescuerRestAfterEvac: { ...v.rescuerRestAfterEvac },
@@ -106,6 +130,12 @@ export const VARIANT_META: readonly VariantMeta[] = [
     label: 'V2 · Stability as health',
     description: 'Each game hour every open portal may lose stability; at 0 it collapses early.',
     fields: [num('jumpChancePct', 'Jump chance per hour, %', 0n, 100n), num('jumpMin', 'Jump min', 0n, 100n), num('jumpMax', 'Jump max', 0n, 100n)],
+  },
+  {
+    id: 'criticalPhase',
+    label: 'V2b · Critical phase',
+    description: 'With V2: a portal at stability 0 turns critical instead of collapsing; Stabilize in time saves it, otherwise it collapses when the hours run out.',
+    fields: [num('hours', 'Critical hours', 1n, 10n)],
   },
   {
     id: 'stabilizeExtends',

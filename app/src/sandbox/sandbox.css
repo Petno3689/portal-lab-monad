@@ -232,6 +232,45 @@ input[aria-invalid='true'] {
   font-size: 0.9rem;
 }
 
+.slot.danger-amber {
+  box-shadow: 0 0 0 2px var(--medium);
+}
+.slot.danger-red {
+  box-shadow: 0 0 0 2px var(--critical);
+}
+
+.slot-forecast {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 14px;
+  margin: 0 0 4px;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+.slot.danger-amber .slot-forecast {
+  color: var(--medium);
+}
+.slot.danger-red .slot-forecast,
+.slot-forecast.critical {
+  color: var(--critical);
+  font-weight: 600;
+}
+
+.danger-strip {
+  margin: 10px 0 0;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+}
+.danger-strip.active {
+  border-color: var(--critical);
+  color: var(--critical);
+}
+
 .slot-tags {
   color: var(--muted);
   font-size: 0.85rem;

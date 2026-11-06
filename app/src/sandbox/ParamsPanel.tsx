@@ -253,6 +253,7 @@ export function VariantsPanel({ variants, problem, onEdit }: { variants: Variant
               <strong>{m.label}</strong>
             </label>
             <p className="hint">{m.description}</p>
+            {m.id === 'criticalPhase' && on && !variants.stabilityHealth.on && <p className="bad">Has no effect while V2 is off.</p>}
             {m.fields.map((f) => {
               const value = variantNumber(variants, m.id, f.key);
               return (

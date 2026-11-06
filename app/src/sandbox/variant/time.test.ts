@@ -207,3 +207,50 @@ describe('variant catch-up composes', () => {
     expect(withEarly).toBeGreaterThan(0);
   }, 60_000);
 });
+
+describe('variant catch-up composes with V2b on', () => {
+  it('catch-up to b then to c equals catch-up to c, critical marks included, on 60 random states', () => {
+    let withCritical = 0;
+    let withCriticalCollapse = 0;
+    let marksAtSplit = 0;
+    for (let i = 0; i < 60; i++) {
+      const r = rng(12_000 + i);
+      const preset = presetFor(i);
+      const variants = randomVariants(r);
+      variants.criticalPhase = { on: true, hours: BigInt(int(r, 1, 10)) };
+      let s = startGame(preset.config, preset.types, T0, { buyFirstWord: true, variants });
+      let ts = T0 + 2n;
+      for (let step = 0; step < int(r, 1, 30) && !s.player.game.finished; step++) {
+        s = apply(s, nextCall(s, r, ts));
+        ts = advanceTime(r, ts, preset.config.secPerHour);
+      }
+      const p = s.player;
+      expect(p.critical, `state ${i}`).toBeDefined();
+      const sph = preset.config.secPerHour;
+      const b = p.game.lastTickAt + BigInt(int(r, 0, 30)) * sph + BigInt(int(r, 0, Number(sph) - 1));
+      const c = b + BigInt(int(r, 0, 30)) * sph + BigInt(int(r, 0, Number(sph) - 1));
+      const crossing = r() < 0.5;
+      const w = crossing ? word(r) : p.epochWord;
+      const maxCov = crossing ? p.pending.coveredEpochs + BigInt(int(r, 1, 3)) : p.pending.coveredEpochs;
+      const run = (g: typeof p.game, ps: typeof p.portals, crit: VCatchUpResult['critical'], now: bigint) =>
+        catchUpVariant(g, ps, preset.config, preset.types, variants, p.epochWord, w, p.pending.coveredEpochs, maxCov, now, crit);
+
+      const whole = run(p.game, p.portals, p.critical ?? [], c);
+      const first = run(p.game, p.portals, p.critical ?? [], b);
+      const second = run(first.game, first.portals, first.critical, c);
+      expect(second.game, `state ${i}`).toEqual(whole.game);
+      expect(second.portals, `state ${i}`).toEqual(whole.portals);
+      expect(second.critical, `state ${i}`).toEqual(whole.critical);
+      const both = concat(first, second);
+      expect(both.events).toEqual(whole.events);
+      expect(both.spawns).toEqual(whole.spawns);
+      expect(both.hourly).toEqual(whole.hourly);
+      if (whole.hourly.some((h) => h.kind === 'critical')) withCritical++;
+      if (whole.events.some((e) => e.critical)) withCriticalCollapse++;
+      if (first.critical.length > 0) marksAtSplit++;
+    }
+    expect(withCritical).toBeGreaterThan(20);
+    expect(withCriticalCollapse).toBeGreaterThan(5);
+    expect(marksAtSplit).toBeGreaterThan(5);
+  }, 60_000);
+});

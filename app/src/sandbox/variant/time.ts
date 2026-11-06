@@ -25,6 +25,7 @@
  *      b. V2, slots ascending: the jump draw, then the early-collapse check — a
  *         surveyed portal at stability 0, an unsurveyed one at stabilityHi 0,
  *         collapses at h exactly as a scheduled collapse does (flagged early);
+ *         with V2b the check goes through the critical phase instead (below);
  *      c. V1, slots ascending, over the portals still open: the arrival draw;
  *   3. births made possible at h by a slot that 2b freed (they get no step at h).
  * The segment before each event is lived by `advance` as in the mirror (power regen
@@ -34,6 +35,22 @@
  * V1 or V2 on it is NOT applied: a fuse could stop the walk between the mirror's
  * events at an hour and that hour's step, and the next call (which starts its steps
  * at h0 + 1) would then skip that step. The sandbox has no gas limit to protect.
+ *
+ * ── V2b: the critical phase ─────────────────────────────────────────────────
+ *
+ * With V2 and V2b on, a portal meeting the V2 condition at hour step h does not
+ * collapse: it gets a CRITICAL MARK { portalId, untilHour: h + hours } (hourly event
+ * 'critical'). At each later hour step, in the same place of the order (2b, after the
+ * jump draw): condition gone → the mark is dropped ('stabilized'); condition still
+ * there and h ≥ untilHour → the portal collapses as a V2 early collapse, flagged
+ * critical as well. A mark is dropped when its portal leaves its slot (any collapse
+ * here; a Close or anything else that empties the slot is caught on the way in: the
+ * marks of ids not open in `portals0` are discarded).
+ *
+ * The marks are state of the game, not of the walk: they come in as `critical0` and
+ * go out as `critical` (sorted by portal id), and the engine stores them next to the
+ * player record. Splitting a catch-up at b therefore hands the walk to c exactly the
+ * marks the whole walk would hold at b — a split composes as before.
  *
  * Like the mirror, no exported function touches its arguments.
  */
@@ -68,15 +85,41 @@ const SALT_NAME = 5n;
 const NAME_POOL_SIZE = 24n;
 const NONE = (1n << 256n) - 1n;
 
-/** A collapse; `early` is true for a V2 collapse at stability 0. */
+/**
+ * A collapse; `early` is true for a V2 collapse at stability 0, `critical` (present
+ * only when true) for one that ends a V2b critical phase.
+ */
 export interface VCollapse extends Collapse {
   early: boolean;
+  critical?: true;
+}
+
+/** V2b: the portal with this id is critical until `untilHour`. */
+export interface CriticalMark {
+  portalId: bigint;
+  untilHour: bigint;
 }
 
 /** One thing an hourly variant did. */
 export type HourlyEvent =
   | { kind: 'arrival'; slot: bigint; atHour: bigint }
-  | { kind: 'jump'; slot: bigint; amount: bigint; atHour: bigint };
+  | { kind: 'jump'; slot: bigint; amount: bigint; atHour: bigint }
+  | { kind: 'critical'; slot: bigint; untilHour: bigint; atHour: bigint }
+  | { kind: 'stabilized'; slot: bigint; atHour: bigint };
+
+/**
+ * The HP a collapse of `p` costs, before the cap at the HP left — the rule of the
+ * mirror's `_collapse` (shared/src/time.ts), used by `collapse` below and by the
+ * board's forecast: deaths = the known creature count, else (lo + hi) / 2, plus the
+ * crew inside; no deaths costs hpEmptyCollapse.
+ */
+export function collapseDamage(p: Portal, c: Config): { deaths: bigint; hpLost: bigint } {
+  let deaths = p.creaturesKnown ? p.creatures : (p.creaturesLo + p.creaturesHi) / 2n;
+  if (p.observerInside) deaths += 1n;
+  if (p.rescuerInside) deaths += 1n;
+  const hpLost = deaths > 0n ? c.hpCollapseBase + c.hpCollapsePerDeath * deaths : c.hpEmptyCollapse;
+  return { deaths, hpLost };
+}
 
 export interface VCatchUpResult {
   game: Game;
@@ -85,6 +128,8 @@ export interface VCatchUpResult {
   spawns: Spawn[];
   /** The hourly variants' events, in walk order. */
   hourly: HourlyEvent[];
+  /** V2b marks after the walk, sorted by portal id (always empty without V2 + V2b). */
+  critical: CriticalMark[];
   cappedShort: boolean;
 }
 
@@ -115,11 +160,13 @@ interface Walk {
   v: VariantSet;
   hourly: boolean; // V1 or V2 on: hour steps, no fuse
   stepNext: bigint; // the next hour to step
+  crit: Map<bigint, bigint>; // V2b: portal id → untilHour
 }
 
 /**
- * Fork of shared `catchUp`: the same arguments plus the variant set; the result also
- * carries the hourly events and the early flag of each collapse.
+ * Fork of shared `catchUp`: the same arguments plus the variant set and the V2b marks
+ * (last, optional: none); the result also carries the hourly events, the early flag
+ * of each collapse and the marks after the walk.
  */
 export function catchUpVariant(
   g0: Game,
@@ -132,6 +179,7 @@ export function catchUpVariant(
   storedCoveredEpochs: bigint,
   maxCoveredEpochs: bigint,
   nowTs: bigint,
+  critical0: readonly CriticalMark[] = [],
 ): VCatchUpResult {
   if (BigInt(portals0.length) !== MAX_OPEN_PORTALS) {
     throw new Error(`catchUp: expected ${MAX_OPEN_PORTALS} portals, got ${portals0.length}`);
@@ -145,9 +193,14 @@ export function catchUpVariant(
   const events: VCollapse[] = [];
   const spawns: Spawn[] = [];
   const hourly: HourlyEvent[] = [];
+  // V2b marks of the portals still open (a mark never outlives its portal).
+  const crit = new Map<bigint, bigint>();
+  for (const m of critical0) {
+    if (portals.some((p) => p.status !== PortalStatus.Empty && p.id === m.portalId)) crit.set(m.portalId, m.untilHour);
+  }
 
   if (g.startedAt === 0n || g.finished || nowTs < g.startedAt) {
-    return { game: g, portals, events, spawns, hourly, cappedShort: false };
+    return { game: g, portals, events, spawns, hourly, critical: marksOf(crit), cappedShort: false };
   }
   if (nowTs < g.lastTickAt) nowTs = g.lastTickAt;
 
@@ -177,6 +230,7 @@ export function catchUpVariant(
     v,
     hourly: hourlyOn(v),
     stepNext: 0n,
+    crit,
   };
   w.hNow = subChecked(nowTs, g.startedAt) / w.sph;
   w.h0 = subChecked(g.lastTickAt, g.startedAt) / w.sph;
@@ -256,7 +310,13 @@ export function catchUpVariant(
 
   ageAll(g, portals, c, types, w.sph, hFreeze, effTs);
 
-  return { game: g, portals, events, spawns, hourly, cappedShort };
+  return { game: g, portals, events, spawns, hourly, critical: marksOf(w.crit), cappedShort };
+}
+
+function marksOf(crit: ReadonlyMap<bigint, bigint>): CriticalMark[] {
+  return [...crit]
+    .map(([portalId, untilHour]) => ({ portalId, untilHour }))
+    .sort((a, b) => (a.portalId < b.portalId ? -1 : a.portalId > b.portalId ? 1 : 0));
 }
 
 /**
@@ -300,7 +360,7 @@ function walk(
     advance(g, w, c, eventHour);
     if (w.died) return false;
     if (isCollapse) {
-      collapse(g, portals, colHour, w, c, types, events, w.colSlot, ch, false);
+      collapse(g, portals, colHour, w, c, types, events, w.colSlot, ch, false, false);
       if (w.died) return false;
     } else {
       birth(g, portals, colHour, w, c, types, spawns, bh);
@@ -330,6 +390,7 @@ function hourStep(
   const seed = seedFor(w, c, h);
 
   const sh = w.v.stabilityHealth;
+  const cp = w.v.criticalPhase;
   if (sh.on) {
     for (let i = 0; i < portals.length; i++) {
       const p = portals[i];
@@ -348,8 +409,26 @@ function hourStep(
         }
       }
       const atZero = p.surveyed ? p.stability === 0n : p.stabilityHi === 0n;
+      if (cp.on) {
+        // V2b: the condition starts, keeps or ends a critical phase.
+        const until = w.crit.get(p.id);
+        if (!atZero) {
+          if (until !== undefined) {
+            w.crit.delete(p.id);
+            hourly.push({ kind: 'stabilized', slot: BigInt(i), atHour: h });
+          }
+          continue;
+        }
+        if (until === undefined) {
+          const untilHour = h + cp.hours;
+          w.crit.set(p.id, untilHour);
+          hourly.push({ kind: 'critical', slot: BigInt(i), untilHour, atHour: h });
+          continue;
+        }
+        if (h < until) continue;
+      }
       if (atZero) {
-        collapse(g, portals, colHour, w, c, types, events, BigInt(i), h, true);
+        collapse(g, portals, colHour, w, c, types, events, BigInt(i), h, true, cp.on);
         w.nEv += 1n;
         if (w.died) return;
       }
@@ -449,7 +528,7 @@ function advance(g: Game, w: Walk, c: Config, to: bigint): void {
   w.cursor = to;
 }
 
-/** The mirror's collapse; `early` only labels the record (the damage is the same). */
+/** The mirror's collapse; `early` and `critical` only label the record (the damage is the same). */
 function collapse(
   g: Game,
   portals: Portal[],
@@ -461,13 +540,10 @@ function collapse(
   s: bigint,
   ch: bigint,
   early: boolean,
+  critical: boolean,
 ): void {
   const p = portals[Number(s)];
-  let deaths = p.creaturesKnown ? p.creatures : (p.creaturesLo + p.creaturesHi) / 2n;
-  if (p.observerInside) deaths += 1n;
-  if (p.rescuerInside) deaths += 1n;
-
-  const hpLost = deaths > 0n ? c.hpCollapseBase + c.hpCollapsePerDeath * deaths : c.hpEmptyCollapse;
+  const { deaths, hpLost } = collapseDamage(p, c);
   const hpBefore = g.hp;
   const actualLost = hpBefore > hpLost ? hpLost : hpBefore;
 
@@ -477,7 +553,9 @@ function collapse(
     hpLost: trunc(actualLost, 16),
     atHour: trunc(ch, 32),
     early,
+    ...(critical ? { critical: true as const } : {}),
   });
+  w.crit.delete(p.id);
   g.hp = trunc(hpBefore - actualLost, 16);
 
   w.yieldSum = subChecked(w.yieldSum, types[p.portalType].powerYieldPerHour);

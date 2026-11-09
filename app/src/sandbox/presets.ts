@@ -156,3 +156,29 @@ export const BEST_4_NOV: Preset = {
   config: { ...LIVE_V2.config, powerRegenPerHour: 15n, spawnCostUnits: 3500n },
   types: LIVE_V2.types.map((t) => ({ ...t })) as unknown as TypeTable,
 };
+
+/**
+ * "Best 8 Nov": the owner's settings from the play-test of 8 November 2026
+ * (sandbox-game-1794123632) — LIVE_V2 with the collapse/heal/regen/cost/spawn changes
+ * below, Flash lasting 6–12 hours and the Energetic portal yielding 8 power per hour.
+ * Its rule variants are `best8NovVariants()` (variant/variants.ts).
+ */
+export const BEST_8_NOV: Preset = {
+  config: {
+    ...LIVE_V2.config,
+    hpCollapseBase: 15n,
+    hpCollapsePerDeath: 5n,
+    healPerCreature: 4n,
+    powerRegenPerHour: 15n,
+    costSendRescuer: 15n,
+    costClose: 15n,
+    spawnCostUnits: 4000n,
+  },
+  types: [
+    { ...LIVE_V2.types[0], hoursMin: 6n, hoursMax: 12n },
+    { ...LIVE_V2.types[1] },
+    { ...LIVE_V2.types[2] },
+    { ...LIVE_V2.types[3] },
+    { ...LIVE_V2.types[4], powerYieldPerHour: 8n },
+  ],
+};

@@ -85,6 +85,22 @@ export function best4NovVariants(): VariantSet {
   };
 }
 
+/**
+ * The variants of the "Best 8 Nov" preset: the owner's settings from the play-test of
+ * 8 November 2026 (sandbox-game-1794123632) — V1–V6 on, V2b on.
+ */
+export function best8NovVariants(): VariantSet {
+  return {
+    creatureArrivals: { on: true, chancePct: 10n, maxPerPortal: 3n },
+    stabilityHealth: { on: true, jumpChancePct: 10n, jumpMin: 10n, jumpMax: 30n },
+    criticalPhase: { on: true, hours: 2n },
+    stabilizeExtends: { on: true, hours: 2n },
+    rescuerTakesObserver: { on: true },
+    rescuerRestAfterEvac: { on: true, hours: 2n },
+    pressurePerAction: { on: true, value: 250n },
+  };
+}
+
 export function cloneVariants(v: VariantSet): VariantSet {
   return {
     creatureArrivals: { ...v.creatureArrivals },

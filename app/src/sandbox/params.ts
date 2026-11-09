@@ -9,7 +9,7 @@
  *   {
  *     "format": 1,
  *     "exportedAt": "2026-11-03T12:00:00.000Z",   // ISO-8601, real time of the export
- *     "preset": "Live v2" | "Energy ×2" | "Best 4 Nov" | "Custom", // name selected when the game started
+ *     "preset": "Live v2" | "Energy ×2" | "Best 4 Nov" | "Best 8 Nov" | "Custom", // name selected when the game started
  *     "startedAt": "1793700000",                    // virtual nowTs of the start (decimal)
  *     "delays": true,                               // "Chain-like delays" was on at the start
  *     "config":  { "<Config field>": "<decimal>", ... },
@@ -40,14 +40,14 @@
 
 import type { Action, Config, PortalTypeParams } from '@shared/types';
 import { InvalidConfigError, validateConfig, type LogEntry } from './engine';
-import { BEST_4_NOV, ENERGY_X2, LIVE_V2, type Preset, type TypeTable } from './presets';
-import { best4NovVariants, defaultVariants, variantsFromPlain, variantsToPlain, type VariantSet } from './variant/variants';
+import { BEST_4_NOV, BEST_8_NOV, ENERGY_X2, LIVE_V2, type Preset, type TypeTable } from './presets';
+import { best4NovVariants, best8NovVariants, defaultVariants, variantsFromPlain, variantsToPlain, type VariantSet } from './variant/variants';
 
 // ── Parameter sets ───────────────────────────────────────────────────────────
 
 export type ParamSet = Preset;
 
-export const PRESET_NAMES = ['Live v2', 'Energy ×2', 'Best 4 Nov', 'Custom'] as const;
+export const PRESET_NAMES = ['Live v2', 'Energy ×2', 'Best 4 Nov', 'Best 8 Nov', 'Custom'] as const;
 export type PresetName = (typeof PRESET_NAMES)[number];
 
 export function cloneParams(p: ParamSet): ParamSet {
@@ -59,12 +59,12 @@ export function cloneParams(p: ParamSet): ParamSet {
 
 /** The parameter set of a named preset; `Custom` has none of its own (returns Live v2). */
 export function presetParams(name: PresetName): ParamSet {
-  return cloneParams(name === 'Energy ×2' ? ENERGY_X2 : name === 'Best 4 Nov' ? BEST_4_NOV : LIVE_V2);
+  return cloneParams(name === 'Energy ×2' ? ENERGY_X2 : name === 'Best 4 Nov' ? BEST_4_NOV : name === 'Best 8 Nov' ? BEST_8_NOV : LIVE_V2);
 }
 
-/** The rule variants a named preset sets: all off, except for "Best 4 Nov" (`Custom`: all off too). */
+/** The rule variants a named preset sets: all off, except for "Best 4 Nov" and "Best 8 Nov" (`Custom`: all off too). */
 export function presetVariants(name: PresetName): VariantSet {
-  return name === 'Best 4 Nov' ? best4NovVariants() : defaultVariants();
+  return name === 'Best 4 Nov' ? best4NovVariants() : name === 'Best 8 Nov' ? best8NovVariants() : defaultVariants();
 }
 
 // ── Field metadata ───────────────────────────────────────────────────────────

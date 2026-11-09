@@ -32,9 +32,10 @@ below.
 
 What changed since:
 
+- A run that stops at the edge of its random word is recorded at that edge; time past it does not count.
 - Portals are born at the hour their spawn pressure matures.
 - A Deaf portal's second survey reads exact values.
-- A stuck randomness request can be cancelled by its player after 15 s, by anyone else after 10 min.
+- A stuck randomness request can be cancelled by its player after 2 min, by anyone else after 10 min; cancelling a request that crosses an epoch edge ends the run at that edge.
 - `epochHours` is 36.
 - The leaderboard is on chain.
 - Game keys: sign once, then play without a wallet pop-up per action.
@@ -127,11 +128,12 @@ granularity.
 - **Deaf portals take two surveys.** The first survey narrows the ranges, the
   second reads exact values (`EffectsLib.sol`, `narrowedOnce`).
 - **A stuck randomness request can be cancelled.** The player can call
-  `cancelDeferred` once 15 real seconds have passed since the request
-  (`requestTimeoutHours` 1 x `secPerHour` 15), anyone else after 600 real
+  `cancelDeferred` once 120 real seconds have passed since the request
+  (`requestTimeoutHours` 8 x `secPerHour` 15), anyone else after 600 real
   seconds (`outsiderTimeoutHours` 40 x 15). The wait is measured in real
   time, not game hours, because a request stuck at an epoch edge freezes the
-  game clock. The Entropy fee is not refunded.
+  game clock. The Entropy fee is not refunded. Cancelling an epoch crossing ends the run
+  at the edge hour.
 - **Source verification.** The 28 October deployment was verified on Sourcify
   (MonadVision) on 1 November 2026, and `NameRegistry` on 2 November 2026; the
   submitted 13 October deployment is source-verified on MonadVision too.

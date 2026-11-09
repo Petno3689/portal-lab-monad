@@ -184,12 +184,12 @@ sourcify --verifier-url https://sourcify-api-monad.blockvision.org/
 
 Ожидаемые значения — в `contracts/src/GameConfig.sol` того коммита, с которого
 идёт деплой. При расхождении прав `GameConfig.sol`, а этот список надо поправить.
-На ветке `contract-v2` после ребаланса 16 октября:
+На ветке `integrity-fixes` (9 ноября):
 - `hpStart = 80`, `hpMax = 100`, `hpCollapsePerDeath = 8`
 - `pressureRampPerHour = 2`
 - `secPerHour = 15`
 - `epochHours = 36`
-- `requestTimeoutHours = 1`
+- `requestTimeoutHours = 8`
 - `outsiderTimeoutHours = 40`
 
 (`maxSpawnsPerTx` и `deafNarrowThreshold` удалены из конфигурации.)

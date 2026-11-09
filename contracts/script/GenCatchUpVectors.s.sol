@@ -317,9 +317,11 @@ contract GenCatchUpVectors is Script {
         vs[n - 1].p[1] = _open(3); // due at hour 3, but hWalkEnd is 0: not an event
 
         // One epoch pinned -> the last advanceable hour is epochHours - 1 (35 under the deployed 36).
+        // Config 2 keeps the deployed epochHours, so the hours below follow it.
+        uint256 edge = uint256(GameConfig.config().epochHours) - 1;
         Game memory g = _g();
         g.power = 0;
-        n = _add(vs, n, "window: hNow past the pinned edge, stamped at the edge", g, 2, 0, 1, _tsOf(50, SPH));
+        n = _add(vs, n, "window: hNow past the pinned edge, stamped at the edge", g, 2, 0, 1, _tsOf(edge + 15, SPH));
         vs[n - 1].p[0] = _typed(100, PortalType.Deaf);
 
         n = _add(vs, n, "window: hNow before the pinned edge, stamped at nowTs", _g(), 2, 0, 10, _tsOf(30, SPH));
@@ -328,11 +330,11 @@ contract GenCatchUpVectors is Script {
         // The world already stands past the pinned edge: hWalkEnd is pulled up to
         // windowStart, so no hour is lived and no portal ages past its snapshot.
         g = _g();
-        g.lastTickAt = _tsOf(40, SPH);
-        g.hoursElapsed = 40;
-        n = _add(vs, n, "window: the pinned edge lies behind the world", g, 2, 0, 1, _tsOf(50, SPH));
+        g.lastTickAt = _tsOf(edge + 5, SPH);
+        g.hoursElapsed = uint32(edge + 5);
+        n = _add(vs, n, "window: the pinned edge lies behind the world", g, 2, 0, 1, _tsOf(edge + 15, SPH));
         vs[n - 1].p[0] = _typed(100, PortalType.Deaf);
-        vs[n - 1].p[0].snapshotAt = _tsOf(40, SPH);
+        vs[n - 1].p[0].snapshotAt = _tsOf(edge + 5, SPH);
         vs[n - 1].p[1] = _typed(100, PortalType.Deaf);
         vs[n - 1].p[1].snapshotAt = _tsOf(10, SPH);
 
@@ -472,7 +474,7 @@ contract GenCatchUpVectors is Script {
     function _dCollapseMaths(Vec[] memory vs, uint256 n) private pure returns (uint256) {
         // hp exactly equal to the loss: the non-strict test takes hp, and the run
         // ends at the hour of the event.
-        Config memory c2 = GameConfig.config(); // config 2 only lifts powerMax
+        Config memory c2 = GameConfig.config(); // config 2 lifts powerMax and zeroes pressure; the hp costs are the deployed ones
         Game memory g = _g();
         g.hp = uint16(uint256(c2.hpCollapseBase) + uint256(c2.hpCollapsePerDeath)); // 1 creature
         n = _add(vs, n, "walk: a collapse takes hp to exactly zero", g, 2, 0, 100, _tsOf(10, SPH));

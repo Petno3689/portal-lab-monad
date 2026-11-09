@@ -118,44 +118,63 @@ contract RequestTimeoutTest is Test {
         harness.cancelDeferred(player);
     }
 
+    /// @dev A lab whose player timeout is 1 hour (the deployed one is longer),
+    /// with `a` committed on an unsurveyed portal at `power`.
+    function _commitOneHourLab(Action a, uint16 power)
+        internal
+        returns (CustomConfigLab lab, uint256 t, uint64 reqId)
+    {
+        Config memory c = DefaultConfig.config();
+        c.requestTimeoutHours = 1;
+        lab = new CustomConfigLab(c, new DeterministicSource(0));
+        t = uint256(c.requestTimeoutHours) * c.secPerHour;
+        lab.setGame(player, _game(power));
+        lab.setPortal(player, 0, _unsurveyed());
+        lab.act(0, a);
+        reqId = lab.getPending(player).requestId;
+    }
+
     function test_6_2_StuckSurvey_CrewBackHalfPowerBack() public {
-        uint64 reqId = _commit(Action.SendObserver, 50); // cost 10 -> power 40
-        assertEq(harness.getGame(player).power, 40);
-        vm.warp(BASE + TIMEOUT + 1);
+        // Tests the refund arithmetic, which does not depend on the timeout length; the deployed timeout is covered by test_6_1 and test_6_6*.
+        (CustomConfigLab lab, uint256 t, uint64 reqId) = _commitOneHourLab(Action.SendObserver, 50); // cost 10 -> power 40
+        assertEq(lab.getGame(player).power, 40);
+        vm.warp(BASE + t + 1);
 
         vm.expectEmit(true, true, false, true);
         emit PortalLab.DeferredActionCancelled(player, 0, Action.SendObserver, Refusal.RandomnessTimeout, reqId, 0);
-        harness.cancelDeferred(player);
+        lab.cancelDeferred(player);
 
-        Game memory g = harness.getGame(player);
-        Portal memory p = harness.getPortals(player)[0];
+        Game memory g = lab.getGame(player);
+        Portal memory p = lab.getPortals(player)[0];
         assertEq(g.power, 50, "half of 10 returned + 5 regen for the hung hour");
         assertEq(g.observersFree, 3, "observer back, alive");
         assertFalse(p.observerInside, "observer out");
         assertFalse(p.surveyPending, "survey flag cleared");
         assertEq(uint8(p.status), uint8(PortalStatus.Open), "portal intact");
-        assertFalse(harness.getPending(player).active, "lock released");
+        assertFalse(lab.getPending(player).active, "lock released");
     }
 
     function test_6_3_StuckBlindRescue_RescuerBack() public {
-        _commit(Action.SendRescuer, 50); // cost 20 -> 30
-        assertEq(harness.getGame(player).rescuersFree, 1);
-        vm.warp(BASE + TIMEOUT + 1);
-        harness.cancelDeferred(player);
+        // Tests the refund arithmetic, which does not depend on the timeout length; the deployed timeout is covered by test_6_1 and test_6_6*.
+        (CustomConfigLab lab, uint256 t,) = _commitOneHourLab(Action.SendRescuer, 50); // cost 20 -> 30
+        assertEq(lab.getGame(player).rescuersFree, 1);
+        vm.warp(BASE + t + 1);
+        lab.cancelDeferred(player);
 
-        Game memory g = harness.getGame(player);
+        Game memory g = lab.getGame(player);
         assertEq(g.rescuersFree, 2, "rescuer back in the pool");
         assertEq(g.power, 45, "half of 20 returned + 5 regen for the hung hour");
-        assertFalse(harness.getPortals(player)[0].rescuerPending, "rescuer flag cleared");
+        assertFalse(lab.getPortals(player)[0].rescuerPending, "rescuer flag cleared");
     }
 
     function test_PowerRefundCappedAtMax() public {
-        _commit(Action.SendObserver, 100); // 100 - 10 = 90
+        // Tests the refund arithmetic, which does not depend on the timeout length; the deployed timeout is covered by test_6_1 and test_6_6*.
+        (CustomConfigLab lab,,) = _commitOneHourLab(Action.SendObserver, 100); // 100 - 10 = 90
         // Three hung hours regen 15, so catch-up alone fills the pool to 100; the
         // refund of 5 (half of 10) then lands on a full pool and must be clamped.
         vm.warp(BASE + 3 * uint256(SPH));
-        harness.cancelDeferred(player);
-        assertEq(harness.getGame(player).power, 100); // 90 + 15 regen capped at 100, + 5 refund capped at 100
+        lab.cancelDeferred(player);
+        assertEq(lab.getGame(player).power, 100); // 90 + 15 regen capped at 100, + 5 refund capped at 100
     }
 
     function test_6_4_CrossingDeferral_NoPowerRefund_LockReleased_WorldStays() public {
@@ -177,6 +196,8 @@ contract RequestTimeoutTest is Test {
         assertLe(g.hoursElapsed, uint32(1) * EPH - 1, "world has not crossed the pinned edge");
         assertFalse(harness.getPending(player).active, "lock released");
         assertEq(harness.getPending(player).coveredEpochs, 1, "coverage preserved");
+        assertTrue(g.finished, "a cancelled crossing ends the run");
+        assertEq(g.diedAtHour, EPH - 1, "recorded at the pinned edge");
     }
 
     function test_6_5_StuckPaidSync_Cancelled() public {
@@ -193,6 +214,8 @@ contract RequestTimeoutTest is Test {
         assertEq(harness.getPending(player).coveredEpochs, 1, "coverage preserved");
         assertEq(harness.getGame(player).power, 100, "no refund: only the free catch-up regen, up to the ceiling");
         assertEq(harness.getGame(player).observersFree, 3, "crew untouched");
+        assertTrue(harness.getGame(player).finished, "a cancelled crossing ends the run");
+        assertEq(harness.getGame(player).diedAtHour, EPH - 1, "recorded at the pinned edge");
     }
 
     function test_6_6_StrangerCanCancel() public {
@@ -270,6 +293,8 @@ contract RequestTimeoutTest is Test {
         harness.cancelDeferred(player); // real time passed -> allowed
         assertFalse(harness.getPending(player).active);
         assertLe(harness.getGame(player).hoursElapsed, uint32(1) * EPH - 1, "world has not crossed the pinned edge");
+        assertTrue(harness.getGame(player).finished, "a cancelled crossing ends the run");
+        assertEq(harness.getGame(player).diedAtHour, EPH - 1, "recorded at the pinned edge");
     }
 
     function test_6_8_LateWordAfterCancel_FallsOffHarmlessly() public {

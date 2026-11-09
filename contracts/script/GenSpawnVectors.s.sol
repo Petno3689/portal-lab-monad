@@ -103,13 +103,14 @@ contract GenSpawnVectors is Script {
         uint256 openStart;
         uint256 freeAfter;
         uint256 births;
-        bool tailDeath; // died beyond the pinned edge (the deterministic §5.5 overflow)
+        bool tailDeath; // alive at the pinned edge, over by hNow (the deterministic §5.5 overflow)
         bool fuse; // the event fuse stopped the walk
         uint256 fullRaw; // debt0 + pressure over the whole window
         uint256 covered; // debt0 + pressure over the walked span
         uint256 debtAtEdge; // what the births left of `covered`
         uint256 tailNeeded; // pressure that would fill the lab from the edge
         uint256 tailFill; // the hour it would (max when it would not by hNow)
+        uint256 tailTrigger; // tailFill + ceil(hp at the edge / overflow) on a tail death (max otherwise)
     }
 
     /// @dev Coverage registry: a fixed list of case names and a hit counter each.
@@ -349,17 +350,28 @@ contract GenSpawnVectors is Script {
         n = _add(vs, n, "death: beyond the edge, the debt alone fills the lab at the edge", g, 1, 0, 1, 0, _tsOf(10, SPH));
 
         // Beyond the edge with nothing pinned: the lab would fill at hour 12 and
-        // die at 13 == hNow exactly. The bound is not strict, so this still dies.
+        // the trigger is 13 == hNow exactly. The bound is not strict, so the run is
+        // over, recorded at the edge (hour 0).
         g = _g();
         g.hp = 5;
-        n = _add(vs, n, "death: beyond the edge, the hour of death lands exactly on hNow", g, 1, 0, 1, 0, _tsOf(13, SPH));
+        n = _add(vs, n, "death: beyond the edge, the trigger hour lands exactly on hNow", g, 1, 0, 1, 0, _tsOf(13, SPH));
 
         // The walk stops at the pinned edge (hour 11) with eleven newborns; the
         // twelfth would mature at hour 12, past the edge. The overflow beyond the
-        // edge needs no word, so the edge does not hold the death back (hour 13).
+        // edge needs no word, so the edge does not hold the death back (trigger
+        // hour 13); the run is recorded at the edge, hour 11.
         g = _g();
         g.hp = 5;
         n = _add(vs, n, "death: the walk stops at the edge and the overflow beyond it kills", g, 1, 1, 1, 1, _tsOf(30, SPH));
+
+        // Beyond the edge, recorded at the edge and not at the trigger hour: the
+        // world stands at hour 20 with nothing pinned (edge 20); the lab fills at
+        // 32 and 60 hp buy 12 more hours, trigger 44 <= hNow 50. Recorded at 20.
+        g = _g();
+        g.hp = 60;
+        g.lastTickAt = _tsOf(20, SPH);
+        g.hoursElapsed = 20;
+        n = _add(vs, n, "death: beyond the edge, recorded at the edge, not at the trigger hour", g, 1, 0, 1, 0, _tsOf(50, SPH));
 
         // Twelve already open, hNow inside the pinned span: the overflow drains in
         // the walk itself and 100 hp outlast two hours.
@@ -839,7 +851,8 @@ contract GenSpawnVectors is Script {
         _reg(cv, "death: a portal born in the window collapses and kills");
         _reg(cv, "death: beyond the edge, the abandoned lab overflows; no portal is born there");
         _reg(cv, "death: beyond the edge, hFill lands exactly on the edge");
-        _reg(cv, "death: beyond the edge, the hour of death equals hNow (the bound is not strict)");
+        _reg(cv, "death: beyond the edge, the trigger hour equals hNow (the bound is not strict)");
+        _reg(cv, "death: beyond the edge, recorded at the edge, not at the trigger hour");
         _reg(cv, "death: not considered beyond the edge, twelve are open there");
         _reg(cv, "death: not considered beyond the edge, hpOverflowPerHour == 0");
         _reg(cv, "death: spawnCostUnits == 0 makes needed zero, the run dies, nothing spawns");
@@ -913,7 +926,12 @@ contract GenSpawnVectors is Script {
         return lo;
     }
 
-    function _derive(Vec memory v, Config memory c) private pure returns (Derived memory d) {
+    function _derive(Vec memory v, Config[] memory cfgs, PortalTypeParams[] memory tps)
+        private
+        pure
+        returns (Derived memory d)
+    {
+        Config memory c = cfgs[v.cfg];
         d.sph = c.secPerHour;
         uint256 nowEff = v.nowTs < v.g.lastTickAt ? v.g.lastTickAt : v.nowTs; // catchUp clamps a stale clock
         d.hNow = (uint256(nowEff) - uint256(v.g.startedAt)) / d.sph;
@@ -926,7 +944,11 @@ contract GenSpawnVectors is Script {
             if (v.rp[i].status == PortalStatus.Empty) d.freeAfter += 1;
         }
         d.births = v.spN;
-        d.tailDeath = v.rg.finished && uint256(v.rg.diedAtHour) > d.hEnd;
+        // A tail death is a run alive at the edge and over by hNow; it is recorded
+        // AT the edge, so its diedAtHour cannot tell it from a walk death there.
+        // The state at the edge comes from the real library, called at hEnd.
+        (bool aliveAtEdge, uint256 hpAtEdge) = _atEdge(v, d.hEnd, cfgs, tps);
+        d.tailDeath = v.rg.finished && v.cappedShort && aliveAtEdge;
         d.fuse = !v.rg.finished && v.cappedShort && uint256(v.evN) + uint256(v.spN) == MAX_CATCHUP_EVENTS;
         d.fullRaw = uint256(v.g.spawnDebt) + TimeLib.spawnPressure(d.windowStart, d.hNow, c);
         d.covered = uint256(v.g.spawnDebt) + TimeLib.spawnPressure(d.windowStart, d.hEnd, c);
@@ -940,6 +962,25 @@ contract GenSpawnVectors is Script {
         d.tailFill = d.debtAtEdge + TimeLib.spawnPressure(d.hEnd, d.hNow, c) >= d.tailNeeded
             ? _firstHourTag(d.hEnd, d.hEnd, d.hNow, d.debtAtEdge, d.tailNeeded, c)
             : type(uint256).max;
+        d.tailTrigger = d.tailDeath && d.tailFill != type(uint256).max && c.hpOverflowPerHour > 0
+            ? d.tailFill + (hpAtEdge + uint256(c.hpOverflowPerHour) - 1) / uint256(c.hpOverflowPerHour)
+            : type(uint256).max;
+    }
+
+    /// @dev The world at the end of the walked span `hEnd`, by the real library:
+    /// whether the run is still alive there and its hp. Tagging only.
+    function _atEdge(Vec memory v, uint256 hEnd, Config[] memory cfgs, PortalTypeParams[] memory tps)
+        private
+        pure
+        returns (bool alive, uint256 hp)
+    {
+        Game memory gIn = abi.decode(abi.encode(v.g), (Game));
+        Portal[12] memory pIn = abi.decode(abi.encode(v.p), (Portal[12]));
+        uint40 ts = uint40(uint256(v.g.startedAt) + hEnd * uint256(cfgs[v.cfg].secPerHour));
+        (Game memory ge,,,,,,) = TimeLib.catchUp(
+            gIn, pIn, cfgs[v.cfg], _set(tps, v.ts), v.oldWord, v.newWord, v.stored, v.maxCov, ts
+        );
+        return (!ge.finished, ge.hp);
     }
 
     /// @dev Pressure available at hour `h` of the window: `debt0 + P(windowStart, h)`.
@@ -970,19 +1011,21 @@ contract GenSpawnVectors is Script {
         Config memory c = cfgs[v.cfg];
         if (v.g.startedAt == 0 || v.g.finished || v.nowTs < v.g.startedAt) return; // nothing is walked
         _mark(cv, v.nowTs < v.g.lastTickAt, "stale clock: equals the call at lastTickAt");
-        Derived memory d = _derive(v, c);
+        Derived memory d = _derive(v, cfgs, tps);
         bool walkDeath = v.rg.finished && !d.tailDeath;
 
         _mark(cv, walkDeath && v.spN > 0 && v.rg.openPortals == MAX_OPEN_PORTALS && v.evN == 0,
             "death: births fill the lab and the overflow kills inside the window");
         _mark(cv, walkDeath && v.evN > 0 && _bornThenCollapsed(v, v.evN - 1),
             "death: a portal born in the window collapses and kills");
-        _mark(cv, d.tailDeath && uint256(v.rg.diedAtHour) <= d.hNow
+        _mark(cv, d.tailDeath && d.tailTrigger <= d.hNow
             && (v.spN == 0 || uint256(v.sp[v.spN - 1].atHour) <= d.hEnd),
             "death: beyond the edge, the abandoned lab overflows; no portal is born there");
         _mark(cv, d.tailDeath && d.tailFill == d.hEnd, "death: beyond the edge, hFill lands exactly on the edge");
-        _mark(cv, d.tailDeath && uint256(v.rg.diedAtHour) == d.hNow,
-            "death: beyond the edge, the hour of death equals hNow (the bound is not strict)");
+        _mark(cv, d.tailDeath && d.tailTrigger == d.hNow,
+            "death: beyond the edge, the trigger hour equals hNow (the bound is not strict)");
+        _mark(cv, d.tailDeath && uint256(v.rg.diedAtHour) == d.hEnd && d.tailTrigger > d.hEnd,
+            "death: beyond the edge, recorded at the edge, not at the trigger hour");
         _mark(cv, !v.rg.finished && v.cappedShort && !d.fuse && d.freeAfter == 0 && c.hpOverflowPerHour > 0,
             "death: not considered beyond the edge, twelve are open there");
         _mark(cv, c.hpOverflowPerHour == 0 && v.cappedShort && !v.rg.finished && d.tailFill != type(uint256).max,

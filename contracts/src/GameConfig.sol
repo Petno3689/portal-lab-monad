@@ -55,9 +55,10 @@ library GameConfig {
         c.rangeWidenPerHour = 1;
         // spawn entropy — one random word pinned per 36 game-hour epoch (Ticket 4.5).
         c.epochHours = 36;
-        // a deferral stuck this long (real time) can be cancelled by its player (Ticket 4.7);
-        // anyone else must wait the longer outsider timeout (40 h = 10 real minutes).
-        c.requestTimeoutHours = 1;
+        // a deferral stuck this long (real time) can be cancelled by its player (Ticket 4.7):
+        // 8 game hours = 2 real minutes. Anyone else must wait the longer outsider
+        // timeout (40 h = 10 real minutes).
+        c.requestTimeoutHours = 8;
         c.outsiderTimeoutHours = 40;
     }
 

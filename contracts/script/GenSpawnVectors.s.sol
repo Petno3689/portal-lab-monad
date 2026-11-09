@@ -168,8 +168,8 @@ contract GenSpawnVectors is Script {
     // ── configs and type parameters ──────────────────────────────────────────
 
     /// @dev Eight configs, each built fresh (memory structs are references).
-    ///   0 — the deployed GameConfig verbatim: 1000 pressure/h with a ramp of 1,
-    ///       10000 per portal, overflow 5/h, epochHours 12;
+    ///   0 — the deployed GameConfig verbatim: 1000 pressure/h with the deployed ramp,
+    ///       10000 per portal, overflow 5/h, the deployed epochHours;
     ///   1 — 10000 pressure/h flat: exactly one portal's worth per game hour,
     ///       which makes every fill hour in the comments checkable by eye;
     ///   2 — as 1, overflow OFF (the §5.5 death branch is never considered);

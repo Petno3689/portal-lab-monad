@@ -123,8 +123,8 @@ contract GenCatchUpVectors is Script {
     /// @dev Seven configs, each built fresh (memory structs are references). All of
     /// them zero the two pressure coefficients — see the note at the top.
     ///   0 — the deployed GameConfig: secPerHour 15, overflow 5/h, powerMax 100,
-    ///       regen 5/h, collapse 20 + 10 per death, empty collapse 3, widen 1/h,
-    ///       epochHours 12, rescuersTotal 2;
+    ///       regen 5/h, collapse hpCollapseBase + hpCollapsePerDeath per death, empty collapse 3, widen 1/h,
+    ///       the deployed epochHours, rescuersTotal 2;
     ///   1 — overflow OFF, powerMax lifted (prove twelve open portals cost nothing);
     ///   2 — powerMax lifted (watch the resource rate without a clamp);
     ///   3 — overflow 7/h (ceil(hp / ov) with a remainder);
@@ -316,10 +316,10 @@ contract GenCatchUpVectors is Script {
         vs[n - 1].p[0] = _open(50);
         vs[n - 1].p[1] = _open(3); // due at hour 3, but hWalkEnd is 0: not an event
 
-        // epochHours 12, two epochs pinned -> the last advanceable hour is 23.
+        // One epoch pinned -> the last advanceable hour is epochHours - 1 (35 under the deployed 36).
         Game memory g = _g();
         g.power = 0;
-        n = _add(vs, n, "window: hNow past the pinned edge, stamped at the edge", g, 2, 0, 2, _tsOf(50, SPH));
+        n = _add(vs, n, "window: hNow past the pinned edge, stamped at the edge", g, 2, 0, 1, _tsOf(50, SPH));
         vs[n - 1].p[0] = _typed(100, PortalType.Deaf);
 
         n = _add(vs, n, "window: hNow before the pinned edge, stamped at nowTs", _g(), 2, 0, 10, _tsOf(30, SPH));
@@ -330,7 +330,7 @@ contract GenCatchUpVectors is Script {
         g = _g();
         g.lastTickAt = _tsOf(40, SPH);
         g.hoursElapsed = 40;
-        n = _add(vs, n, "window: the pinned edge lies behind the world", g, 2, 0, 2, _tsOf(50, SPH));
+        n = _add(vs, n, "window: the pinned edge lies behind the world", g, 2, 0, 1, _tsOf(50, SPH));
         vs[n - 1].p[0] = _typed(100, PortalType.Deaf);
         vs[n - 1].p[0].snapshotAt = _tsOf(40, SPH);
         vs[n - 1].p[1] = _typed(100, PortalType.Deaf);
@@ -472,8 +472,9 @@ contract GenCatchUpVectors is Script {
     function _dCollapseMaths(Vec[] memory vs, uint256 n) private pure returns (uint256) {
         // hp exactly equal to the loss: the non-strict test takes hp, and the run
         // ends at the hour of the event.
+        Config memory c2 = GameConfig.config(); // config 2 only lifts powerMax
         Game memory g = _g();
-        g.hp = 30;
+        g.hp = uint16(uint256(c2.hpCollapseBase) + uint256(c2.hpCollapsePerDeath)); // 1 creature
         n = _add(vs, n, "walk: a collapse takes hp to exactly zero", g, 2, 0, 100, _tsOf(10, SPH));
         vs[n - 1].p[0] = _open(5);
         vs[n - 1].p[0].creatures = 1;
@@ -529,7 +530,7 @@ contract GenCatchUpVectors is Script {
         // Death at the FIRST of three due collapses: the other two are not emitted
         // and their portals stay untouched.
         g = _g();
-        g.hp = 30;
+        g.hp = uint16(uint256(c2.hpCollapseBase) + uint256(c2.hpCollapsePerDeath)); // one creature: the first collapse kills
         n = _add(vs, n, "walk: death mid-walk, the later collapses are not emitted", g, 2, 0, 100, _tsOf(10, SPH));
         vs[n - 1].p[0] = _open(2);
         vs[n - 1].p[0].creatures = 1;

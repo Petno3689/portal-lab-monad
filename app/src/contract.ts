@@ -208,6 +208,7 @@ export async function sendTx(
   args: readonly unknown[],
   gasMultiplierPct: number,
   value = 0n,
+  onStage: (stage: string, extra?: Record<string, unknown>) => void = () => {},
 ): Promise<{ hash: `0x${string}`; blockNumber: bigint }> {
   const wallet = walletClient(account);
   // Simulate first so a revert surfaces with the contract's own error, not a burned fee.
@@ -218,6 +219,7 @@ export async function sendTx(
     args: args as never,
     value,
   } as never);
+  onStage('simulated');
   // The contract ages the world lazily, so the work an action does grows with the time
   // between this estimate and inclusion in a block; the bare estimate runs out of gas.
   // Trade-off: Monad charges gas price × gas LIMIT, not gas used, so this headroom is paid
@@ -231,8 +233,11 @@ export async function sendTx(
     value,
   } as never);
   const gasLimit = (gas * BigInt(gasMultiplierPct)) / 100n;
+  onStage('estimated', { gasLimit: gasLimit.toString() });
   const hash = await wallet.writeContract({ ...(request as object), gas: gasLimit } as never);
+  onStage('sent', { hash });
   const receipt = await publicClient.waitForTransactionReceipt({ hash });
+  onStage('receipt', { blockNumber: receipt.blockNumber.toString() });
   if (receipt.status === 'reverted') throw new TxReverted(hash, gasLimit, receipt.blockNumber);
   return { hash, blockNumber: receipt.blockNumber };
 }

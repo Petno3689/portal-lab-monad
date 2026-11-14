@@ -21,6 +21,7 @@ import {
   type StorageLike,
 } from './sessionKey';
 import { createTxQueue } from './txQueue';
+import { startRun, mark, finish } from './timing';
 import { canPayWord, parseTopUp, withdrawAmount, wordCost } from './funds';
 import { createBackoff, isExpectedRevert, shouldAutoBuyWord, shouldAutoSettle, type Backoff } from './autopilot';
 import { preview } from '@shared/preview';
@@ -243,6 +244,7 @@ function App() {
   const awaitedBlock = useRef<bigint | null>(null);
   // Whether that deferred action was automatic: its result goes to `autoStatus`.
   const awaitedAuto = useRef(false);
+  const timingRun = useRef(0); // timing run kept open while a deferred action waits for its word
   // State as of the moment the deferral was observed, to tell a fresh game's first word from a plain sync.
   const stateRef = useRef<ChainState | null>(null);
   stateRef.current = state;
@@ -516,10 +518,13 @@ function App() {
       const epoch = cancelEpoch.current;
       const cancelled = () => !live || cancelling.current || cancelEpoch.current !== epoch;
       try {
+        const tid = timingRun.current;
+        mark(tid, 'pollTick');
         const p = await readPending(player);
         if (p.active || cancelled()) return;
         // The outcome events are at or before this block.
         const seenAt = await publicClient.getBlockNumber({ cacheTime: 0 });
+        mark(tid, 'wordSeen', { seenAt: seenAt.toString() });
         const fresh = await readPlayer(player);
         if (cancelled()) return;
         setState(fresh);
@@ -534,6 +539,9 @@ function App() {
         if (cancelled()) return;
         if (auto) setAutoStatus(`${message} (auto)`);
         else setTxStatus({ pending: false, message });
+        mark(tid, 'resultShown');
+        finish(tid);
+        if (timingRun.current === tid) timingRun.current = 0;
       } catch (error) {
         console.error('Pending poll failed:', error);
       }
@@ -566,17 +574,27 @@ function App() {
       setAutoStatus('');
     }
     report(true, label);
+    const tid = startRun(label, { fn, auto });
+    mark(tid, 'click', { label, fn, auto, valuePositive: value > 0n });
+    let keepOpen = false;
     try {
       const pct = retryGasPct ?? getGasMultiplierPct(browserStorage('localStorage'), key.address);
       const { hash, blockNumber } = await txQueue.enqueue(async () => {
+        mark(tid, 'queueReady');
         // Disconnecting must stop what is still queued: nothing signs after the key is dropped.
         if (dropped()) throw new Error('Game key is no longer active');
-        return sendTx(key, fn, args, pct, value);
+        return sendTx(key, fn, args, pct, value, (stage, extra) => mark(tid, stage, extra));
       });
       if (dropped()) return { sent: false };
       awaitedAuto.current = auto;
       const fresh = await readPlayer(key.address);
+      mark(tid, 'stateRead', { pendingActive: fresh.pending.active });
       if (dropped()) return { sent: false };
+      if (fresh.pending.active) {
+        keepOpen = true;
+        if (timingRun.current && timingRun.current !== tid) finish(timingRun.current);
+        timingRun.current = tid;
+      }
       setState(fresh);
       setNow(nowSec());
       if (fn === 'settle' || fn === 'startGame') refreshBestRun(key.address);
@@ -597,6 +615,8 @@ function App() {
       }
       return { sent: false, error };
     } finally {
+      mark(tid, 'done');
+      if (!keepOpen) finish(tid);
       busyRef.current = false;
       setBusy(false);
       refreshBalance(key.address);
@@ -642,6 +662,11 @@ function App() {
     awaited.current = null;
     awaitedBlock.current = null;
     awaitedAuto.current = false;
+    if (timingRun.current) {
+      mark(timingRun.current, 'cancelled');
+      finish(timingRun.current);
+      timingRun.current = 0;
+    }
     // The player has just given up on a word: give them time before buying another.
     const wordTrack = autoTracks.current.word;
     wordTrack.blockedUntil = Math.max(wordTrack.blockedUntil, Date.now() + AUTO_COOLDOWN_MS);

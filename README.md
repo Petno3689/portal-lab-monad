@@ -8,16 +8,20 @@ contract is the sole source of truth, time passes by real wall-clock seconds
 (not player turns), and the goal is simply to keep the lab's HP above zero
 for as long as you can.
 
+**Project status: finished (November 2026). No further development is planned.**
+
 ## Deployed addresses (Monad testnet, chain id 10143)
 
 | Contract | Address |
 |---|---|
-| `PortalLab` | `0x3FE4121729a8f1e2BcC7ECD9dB1279E6EBeF7678` |
-| `PythEntropySource` | `0x45A7120772BB9D15FDFd682dF3EcCc8AeAD306c2` |
+| `PortalLab` | `0xab2326F2c6Fcbd430FEDa33fA2476Ea88C4E2d8e` |
+| `PythEntropySource` | `0xe9B52428854D43793AcBc930fE25d7c2A825e5E8` |
 | `NameRegistry` | `0xe14b1389853aD407A5B72193Ae3Bd1bb35602525` |
 
-This is the live deployment, made on 28 October 2026 from this code. The
-version submitted to Monad Metropolis is described in "Submitted version"
+This is the live deployment, made on 18 November 2026 from commit `31abc75`.
+The previous v2 deployment (28 October 2026) is `PortalLab`
+`0x3FE4121729a8f1e2BcC7ECD9dB1279E6EBeF7678` / `PythEntropySource`
+`0x45A7120772BB9D15FDFd682dF3EcCc8AeAD306c2`. The version submitted to Monad Metropolis is described in "Submitted version"
 below.
 
 ## Submitted version
@@ -47,7 +51,7 @@ What changed since:
 
 1. Connect a wallet and sign one message. The signature creates your **game
    key**, a separate key that plays on your behalf.
-2. Top the game key up (about 3 MON is roughly one game).
+2. Top the game key up. A new random word is needed every 9 real minutes, so staying alive costs about 0.83 MON per real hour at the current Pyth fee (it changes over time), plus one more fee per survey or blind rescue and about 0.04 MON gas per action.
 3. Play without a wallet pop-up per action. The page buys the next random word
    and records finished runs automatically; both can be turned off.
 4. Optionally set a nickname for the leaderboard.
@@ -134,9 +138,9 @@ granularity.
   time, not game hours, because a request stuck at an epoch edge freezes the
   game clock. The Entropy fee is not refunded. Cancelling an epoch crossing ends the run
   at the edge hour.
-- **Source verification.** The 28 October deployment was verified on Sourcify
-  (MonadVision) on 1 November 2026, and `NameRegistry` on 2 November 2026; the
-  submitted 13 October deployment is source-verified on MonadVision too.
+- **Source verification.** The 18 November 2026 deployment is verified on
+  Sourcify (MonadVision), as are `NameRegistry` (2 November 2026) and the
+  submitted 13 October deployment.
 
 ## Stack
 
@@ -179,22 +183,14 @@ This project was built with Claude. Claude Code wrote the contract, test and
 front-end code; a reviewing Claude session wrote the tickets handed to Claude
 Code and reviewed every diff before it landed.
 
-## Pre-existing components
+## History
 
 The on-chain work is based on the game design of an off-chain React/TypeScript
-prototype. That prototype was built starting 14 September 2026, inside the
-hackathon period, as a separate off-chain exercise. The on-chain contracts in
-`contracts/`, the TypeScript mirror in `shared/`, and the front end in `app/`
-were written afterwards, also inside the hackathon period. `forge-std`
-(`contracts/lib/forge-std/`) is vendored external code, not written for this
-project.
-
-## Repository history
-
-This repository holds only a handful of commits, all of them recent. That is
-because the on-chain project was moved into a repository of its own on
-12 October 2026; it says nothing about when the work was done. Work on the
-design started on 14 September 2026 in the earlier repository, and the
-contract first reached Monad testnet on 30 September 2026 (`docs/SPEC.md`,
-section 14.2). The earlier history lives in a separate private repository that
-also contains unrelated work, so it is not published.
+prototype, built starting 14 September 2026 inside the hackathon period as a
+separate exercise; the contract first reached Monad testnet on 30 September
+2026. The on-chain project moved into this repository on 12 October 2026, which
+is why it holds few commits; the earlier history lives in a separate private
+repository that also contains unrelated work. The contracts in `contracts/`, the
+TypeScript mirror in `shared/` and the front end in `app/` were written inside
+the hackathon period. `forge-std` (`contracts/lib/forge-std/`) is vendored
+external code, not written for this project.

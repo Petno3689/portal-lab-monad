@@ -430,15 +430,29 @@ export async function topUp(owner: Address, burner: Address, value: bigint): Pro
   return { hash, blockNumber: receipt.blockNumber };
 }
 
+/**
+ * Gas a plain transfer of MON from the game key to `to` needs. A recipient with code (a smart wallet,
+ * an EIP-7702 delegation) needs more than 21 000, and Monad charges the whole gas limit either way.
+ * Throws when the recipient rejects the transfer.
+ */
+export async function estimateTransferGas(burner: Address, to: Address): Promise<bigint> {
+  try {
+    return await publicClient.estimateGas({ account: burner, to, value: 1n });
+  } catch (error) {
+    console.error('Transfer gas estimate failed:', error);
+    throw new Error('The wallet address rejects incoming MON transfers, so the withdrawal was not sent.');
+  }
+}
+
 /** Send the game key's whole balance, less the transfer's own gas, to `to`. */
 export async function withdraw(burner: PrivateKeyAccount, to: Address): Promise<{ hash: Hex; blockNumber: bigint }> {
-  const [balance, fees] = await Promise.all([
+  const [balance, fees, gas] = await Promise.all([
     publicClient.getBalance({ address: burner.address }),
     publicClient.estimateFeesPerGas(),
+    estimateTransferGas(burner.address, to),
   ]);
-  const value = withdrawAmount(balance, fees.maxFeePerGas);
+  const value = withdrawAmount(balance, fees.maxFeePerGas, gas);
   if (value === 0n) throw new Error('Nothing to withdraw');
-  const gas = 21_000n;
   const hash = await walletClient(burner).sendTransaction({
     to,
     value,

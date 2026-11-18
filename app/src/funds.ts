@@ -2,7 +2,7 @@ import { parseEther } from 'viem';
 
 /** Gas budget of one action that buys a random word; above the measured 540k limit. */
 export const WORD_GAS = 600_000n;
-/** Gas of a plain value transfer. */
+/** Gas of a plain value transfer to an address without code; the fallback before an estimate is known. */
 export const TRANSFER_GAS = 21_000n;
 
 /** What the next random word costs: the Pyth fee plus the gas limit of the action that carries it. */
@@ -14,9 +14,9 @@ export function canPayWord(balance: bigint, fee: bigint, gasPrice: bigint): bool
   return balance >= wordCost(fee, gasPrice);
 }
 
-/** Everything the burner can send away once it has paid for the transfer itself. */
-export function withdrawAmount(balance: bigint, maxFeePerGas: bigint): bigint {
-  const amount = balance - TRANSFER_GAS * maxFeePerGas;
+/** Everything the burner can send away once it has paid for the transfer itself, at the estimated `gas`. */
+export function withdrawAmount(balance: bigint, maxFeePerGas: bigint, gas: bigint): bigint {
+  const amount = balance - gas * maxFeePerGas;
   return amount > 0n ? amount : 0n;
 }
 

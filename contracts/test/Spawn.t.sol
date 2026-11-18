@@ -20,8 +20,8 @@ contract SpawnHarness is PortalLabHarness {
 /// SPEC §4.6, §5.5, §7). State is prepared through `SpawnHarness`; structs are
 /// built fresh by helpers (never assigned by copy — CLAUDE.md rule).
 ///
-/// `DefaultConfig` (all placeholders): secPerHour 15, MAX_OPEN_PORTALS 12,
-/// maxSpawnsPerTx 3, basePressurePerHour 1000, pressureRampPerHour 2,
+/// `DefaultConfig` (the deployed numbers from `GameConfig`): secPerHour 15,
+/// MAX_OPEN_PORTALS 12, basePressurePerHour 1000, pressureRampPerHour 2,
 /// spawnCostUnits 10_000, closePressureBonus 2500, hpMax 100,
 /// hpOverflowPerHour 5. Pressure over game hours [a,b) is the closed form
 ///   base*(b-a) + ramp*((a+b-1)*(b-a))/2.
@@ -368,13 +368,17 @@ contract SpawnTest is Test {
         harness.setGame(player, g);
         harness.setCoverage(player, harness.epochWordOf(player), 0); // nothing pinned
 
-        _warpHours(200);
-        harness.sync(player);
-
         // Hand-computed: needed 120_000, P(0,108)=119_556 < 120_000 <= 120_772
-        // =P(0,109) → hFill = 109. diedAtHour = 109 + 12 = 121.
-        assertTrue(_game_().finished);
-        assertEq(_game_().diedAtHour, 121, "hFill 109 + ceil(60/5) 12");
+        // =P(0,109) → hFill = 109. Trigger = 109 + 12 = 121. The run is recorded
+        // at the pinned edge, which (nothing pinned) is the stored hour 0.
+        _warpHours(120);
+        harness.sync(player);
+        assertFalse(_game_().finished, "alive at trigger - 1");
+
+        _warpHours(121);
+        harness.sync(player);
+        assertTrue(_game_().finished, "over at the trigger hFill 109 + ceil(60/5) 12");
+        assertEq(_game_().diedAtHour, 0, "recorded at the edge (stored hour 0)");
     }
 
     // ── Group 13: Gas — a long pause is not worse than twice a short one ───────
@@ -397,7 +401,7 @@ contract SpawnTest is Test {
         _setupTwo(shortP, 100);
         _setupTwo(longP, 100);
 
-        // 30 h already accrues maxSpawnsPerTx portals (P(0,30) = 30_435 ≥ 3*cost
+        // 30 h already accrues three portals' worth of pressure (P(0,30) = 30_870 ≥ 3*cost
         // for the two free-slot budget), so both calls create the same number of
         // portals and the only extra cost the long pause pays is the binary
         // search — which is O(1) in the pause length.
@@ -483,12 +487,15 @@ contract SpawnTest is Test {
         harness.setGame(player, g);
         harness.setCoverage(player, harness.epochWordOf(player), 0); // nothing pinned: beyond the edge
 
-        _warpHours(200);
-        harness.sync(player);
-
         // Exact: 444 + P(0,108) = 444 + 119_556 = 120_000 = needed.
-        // hFill = 108, diedAtHour = 108 + 12 = 120.
-        assertTrue(_game_().finished);
-        assertEq(_game_().diedAtHour, 120, "hFill 108 + ceil(60/5) 12");
+        // hFill = 108, trigger = 108 + 12 = 120; recorded at the edge, hour 0.
+        _warpHours(119);
+        harness.sync(player);
+        assertFalse(_game_().finished, "alive at trigger - 1");
+
+        _warpHours(120);
+        harness.sync(player);
+        assertTrue(_game_().finished, "over at the trigger hFill 108 + ceil(60/5) 12");
+        assertEq(_game_().diedAtHour, 0, "recorded at the edge (stored hour 0)");
     }
 }

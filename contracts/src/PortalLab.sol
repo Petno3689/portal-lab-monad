@@ -25,9 +25,10 @@ import {TimeLib} from "./TimeLib.sol";
 import {IRandomSource, IRandomConsumer} from "./IRandomSource.sol";
 
 /// @title PortalLab — on-chain core of the "Unstable Portals Lab" game (Monad).
-/// @notice Ticket 1.1: data model, configuration and game start only. No risk,
-/// no actions, no ageing, no spawns, no Pyth, no leaderboard — those are later
-/// tickets. See `docs/SPEC.md`.
+/// @notice The whole game on chain: configuration, game start, actions, lazy ageing
+/// of the world by formula, births, random words delivered by an `IRandomSource`
+/// (Pyth Entropy), request timeouts, settlement and the leaderboard. See
+/// `docs/SPEC.md`.
 ///
 /// @dev Storage layout:
 ///   - `_config` (Config) and `_portalTypeParams` (PortalTypeParams[5]) are
@@ -67,8 +68,8 @@ contract PortalLab is IRandomConsumer {
     /// @notice Reverts when the ETH change refund to the caller fails.
     error RefundFailed();
 
-    /// @notice Reverts when `RulesLib.check` returns a non-None refusal.
-    /// Declared here for ticket 1.5 to use; not yet thrown anywhere.
+    /// @notice Reverts when the game is already over (`GameNotActive`) or
+    /// `RulesLib.check` returns a non-None refusal for the requested action.
     error ActionRefused(Refusal reason);
 
     /// @notice Reverts when `cancelDeferred` finds no outstanding deferral.
@@ -178,8 +179,8 @@ contract PortalLab is IRandomConsumer {
     mapping(address => Player) internal _players;
     /// @dev Permanent best-run record per address. Survives `startGame` resets.
     mapping(address => BestRun) private _bestRun;
-    /// @dev On-chain leaderboard: addresses of all players with at least one settled run.
-    /// Populated on the first settle of each player.
+    /// @dev On-chain leaderboard: addresses of all players with a settled run of
+    /// more than 0 hours. Populated the first time a player's best run rises above 0.
     address[] private _leaderboard;
 
     /// @dev The pluggable source of randomness (SPEC §6). Pyth today, anything
@@ -938,6 +939,13 @@ contract PortalLab is IRandomConsumer {
     /// Crew return ALIVE, unlike a collapse-cancel: there the portal is gone and an
     /// observer inside dies with it; here the portal is intact, the observer simply
     /// walks back out. A rescuer never went in before the reveal.
+    ///
+    /// An epoch-crossing deferral (`deferredWorld` or `syncOnly`) that is cancelled
+    /// ENDS THE RUN at the hour the free catch-up stamped — the pinned edge, the
+    /// last hour it was verifiably alive. Leaving it alive would let the player
+    /// request a new word, a reroll of the epoch's births once the pending
+    /// outcome became visible. Ending it there gives exactly what not paying
+    /// gives: a run abandoned at the edge is recorded at the edge (§5.5).
     function cancelDeferred(address player) external {
         Pending memory pend = _players[player].pending;
         if (!pend.active) revert NoPendingAction();
@@ -984,6 +992,12 @@ contract PortalLab is IRandomConsumer {
             // (harmless on a finished run).
             uint256 restored = uint256(g.power) + (uint256(RulesLib.cost(c, pend.action)) + 1) / 2;
             g.power = uint16(restored > c.powerMax ? c.powerMax : restored);
+        } else if (!g.finished) {
+            // An epoch crossing that is cancelled ends the run at the hour the
+            // free catch-up stamped (the pinned edge), shaped like a tail death.
+            g.hp = 0;
+            g.finished = true;
+            g.diedAtHour = g.hoursElapsed;
         }
 
         _players[player].game = g;
@@ -1216,11 +1230,13 @@ contract PortalLab is IRandomConsumer {
 
     /// @dev Write `g`'s result to `_bestRun[player]` and emit `RunSettled`.
     /// Called from both `settle` and the auto-settle path in `startGame`.
-    /// On first settle for a player, appends their address to `_leaderboard`.
+    /// Appends the player to `_leaderboard` exactly once: the first time their
+    /// best `hoursSurvived` rises above 0. A 0-hour run is still counted in
+    /// `runsSettled` and emits `RunSettled`, but does not list the player.
     function _recordRun(address player, Game memory g) internal {
         BestRun storage best = _bestRun[player];
-        bool isFirstSettle = best.runsSettled == 0;
         uint32 hrs = g.diedAtHour;
+        bool firstListed = best.hoursSurvived == 0 && hrs > 0;
         uint32 rescued = g.creaturesRescued;
         bool newBest = hrs > best.hoursSurvived
             || (hrs == best.hoursSurvived && rescued > best.creaturesRescued);
@@ -1231,7 +1247,7 @@ contract PortalLab is IRandomConsumer {
             best.settledAt = uint32(block.timestamp);
         }
         best.runsSettled += 1;
-        if (isFirstSettle) {
+        if (firstListed) {
             _leaderboard.push(player);
         }
         emit RunSettled(player, hrs, rescued, newBest);
@@ -1242,7 +1258,7 @@ contract PortalLab is IRandomConsumer {
         return _bestRun[player];
     }
 
-    /// @notice The number of players with at least one settled run.
+    /// @notice The number of players with a settled run of more than 0 hours.
     function leaderboardSize() external view returns (uint256) {
         return _leaderboard.length;
     }

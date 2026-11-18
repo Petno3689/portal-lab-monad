@@ -1,7 +1,7 @@
 // PORTAL LAB MONAD TESTNET CONFIGURATION
 
 // PortalLab on Monad testnet (deployed from contracts/script/Deploy.s.sol)
-export const PORTAL_LAB_ADDRESS = "0x3FE4121729a8f1e2BcC7ECD9dB1279E6EBeF7678" as const;
+export const PORTAL_LAB_ADDRESS = "0xab2326F2c6Fcbd430FEDa33fA2476Ea88C4E2d8e" as const;
 
 // Monad testnet chain ID
 export const MONAD_CHAIN_ID = 10143 as const;

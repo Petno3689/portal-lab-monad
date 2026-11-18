@@ -123,7 +123,7 @@ contract GenEffectsVectors is Script {
     // ── configs and type parameters ──────────────────────────────────────────
 
     /// @dev Four configs, each built fresh (memory structs are references).
-    ///   0 — the deployed GameConfig (heal 3, hpMax 100, 10 HP per death);
+    ///   0 — the deployed GameConfig (heal 3, hpMax 100, hpCollapsePerDeath per death; no numbers hard-coded here);
     ///   1 — heal 40, 1000 HP per death (loss overflows uint16), cooldown 65535;
     ///   2 — hpMax and heal 65535, bonus uint32 max, cooldown 0;
     ///   3 — nothing heals or hurts, bonus 0, cooldown 3.
@@ -480,7 +480,7 @@ contract GenEffectsVectors is Script {
     }
 
     function _dClose(Vec[] memory vs, uint256 n) private pure returns (uint256) {
-        // Default config: 10 HP per death, bonus 2500. hp 50.
+        // Default config: hpCollapsePerDeath per death, closePressureBonus. hp 50.
         n = _addA(vs, n, "close: known, 3 creatures", _g(), _p(), 0, 0, Action.Close);
 
         // Known count: the exact field is used, creaturesHi ignored.
@@ -516,20 +516,22 @@ contract GenEffectsVectors is Script {
         p = _p();
         p.observerInside = true;
         p.rescuerInside = true;
-        n = _addA(vs, n, "close: both crew and 3 creatures (5 deaths = 50 HP)", _g(), p, 0, 0, Action.Close);
+        n = _addA(vs, n, "close: both crew and 3 creatures (5 deaths)", _g(), p, 0, 0, Action.Close);
+        // Loss of the vector below: 5 deaths x hpCollapsePerDeath of config 0.
+        uint16 perDeath = GameConfig.config().hpCollapsePerDeath;
         Game memory g = _g();
-        g.hp = 51;
+        g.hp = uint16(5 * uint256(perDeath) + 1);
         p = _p();
         p.observerInside = true;
         p.rescuerInside = true;
-        n = _addA(vs, n, "close: hp 51 against loss 50 leaves 1", g, p, 0, 0, Action.Close);
+        n = _addA(vs, n, "close: hp one above the loss leaves 1", g, p, 0, 0, Action.Close);
 
         // hp floor.
         g = _g();
         g.hp = 5;
         n = _addA(vs, n, "close: hp below loss floors at zero", g, _p(), 0, 0, Action.Close);
         g = _g();
-        g.hp = 30;
+        g.hp = uint16(3 * uint256(perDeath)); // _p(): 3 known creatures, no crew
         n = _addA(vs, n, "close: hp equal to loss floors at zero (strict test)", g, _p(), 0, 0, Action.Close);
         g = _g();
         g.hp = 0;

@@ -8,8 +8,9 @@ import {IRandomSource, IRandomConsumer} from "./IRandomSource.sol";
 /// the game has no build-time dependency on Pyth; the only coupling is the
 /// address passed at deploy. Signatures match `IEntropyV2` (SPEC §6.1).
 interface IEntropyV2 {
-    /// @notice Flat fee for a request with the given callback gas limit. On Monad
-    /// testnet this does not actually vary with the limit (SPEC §6: 0.12816 MON).
+    /// @notice Fee for a request with the given callback gas limit. On Monad
+    /// testnet it did not vary with the limit, but it does change over time
+    /// (0.12816 MON on 28 Oct 2026, 0.1238 MON on 16 Nov), so read it on every call.
     function getFeeV2(address provider, uint32 gasLimit) external view returns (uint128 feeAmount);
 
     /// @notice Request entropy from `provider`, reserving `gasLimit` gas for the

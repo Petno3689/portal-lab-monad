@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { formatEther, isAddress, toHex, type Address, type Hex } from 'viem';
 import { privateKeyToAccount, type PrivateKeyAccount } from 'viem/accounts';
 import { MONAD_CHAIN_ID, MONAD_RPC_URL } from './config';
-import { publicClient, readPlayer, readPending, readPreview, readFee, readCanAct, readBestRun, readDeferredOutcome, readGasPrice, sendTx, sendNameTx, readName, topUp, withdraw, revertOf, isInsufficientFunds, TxReverted, type ChainState } from './contract';
+import { publicClient, readPlayer, readPending, readPreview, readFee, readCanAct, readBestRun, readDeferredOutcome, readGasPrice, sendTx, sendNameTx, readName, topUp, withdraw, estimateTransferGas, revertOf, isInsufficientFunds, TxReverted, type ChainState } from './contract';
 import {
   SESSION_MESSAGE,
   checkBurner,
@@ -21,11 +21,10 @@ import {
   type StorageLike,
 } from './sessionKey';
 import { createTxQueue } from './txQueue';
-import { canPayWord, parseTopUp, withdrawAmount, wordCost } from './funds';
+import { TRANSFER_GAS, canPayWord, parseTopUp, withdrawAmount, wordCost } from './funds';
 import { createBackoff, isExpectedRevert, shouldAutoBuyWord, shouldAutoSettle, type Backoff } from './autopilot';
 import { preview } from '@shared/preview';
 import { catchUp } from '@shared/time';
-import { fallsNoLaterThan } from './edgeBound';
 import { Action, getRefusalMessage, getCancelReasonMessage, portalTypeNames } from './types';
 import { Journal } from './Journal';
 import { Leaderboard } from './Leaderboard';
@@ -212,6 +211,8 @@ function App() {
   const [prices, setPrices] = useState<{ fee: bigint; gasPrice: bigint } | null>(null);
   const [topUpInput, setTopUpInput] = useState('3');
   const [confirmWithdraw, setConfirmWithdraw] = useState(false);
+  const [transferGas, setTransferGas] = useState<bigint | null>(null);
+  const [transferGasError, setTransferGasError] = useState<string | null>(null);
   const [nickname, setNickname] = useState<string | null>(null);
   const [nameInput, setNameInput] = useState('');
   const [gasPct, setGasPct] = useState(120);
@@ -248,6 +249,7 @@ function App() {
   stateRef.current = state;
   const [bestRun, setBestRun] = useState<BestRun | null>(null);
   const [confirmNew, setConfirmNew] = useState(false);
+  const [confirmCancel, setConfirmCancel] = useState(false);
   // Mirrors the localStorage flag; read by the one-time accountsChanged listener.
   const disconnected = useRef(readDisconnected());
   // A cancellation must never be reported as a word delivery: the poll bails while
@@ -509,6 +511,9 @@ function App() {
   // While a deferred action waits for its word, poll getPending; when it clears,
   // reload and report what happened.
   const pendingActive = state?.pending.active ?? false;
+  useEffect(() => {
+    if (!pendingActive) setConfirmCancel(false);
+  }, [pendingActive]);
   useEffect(() => {
     if (!pendingActive || !player) return;
     let live = true;
@@ -839,6 +844,22 @@ function App() {
 
   const burnerAddr = burner?.address;
   useEffect(() => {
+    setTransferGas(null);
+    setTransferGasError(null);
+    if (!confirmWithdraw || !burnerAddr || !owner) return;
+    let cancelled = false;
+    estimateTransferGas(burnerAddr, owner)
+      .then((gas) => {
+        if (!cancelled) setTransferGas(gas);
+      })
+      .catch((error) => {
+        if (!cancelled) setTransferGasError(error instanceof Error ? error.message : String(error));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [confirmWithdraw, burnerAddr, owner]);
+  useEffect(() => {
     if (burnerAddr) refreshNickname(burnerAddr);
   }, [burnerAddr, refreshNickname]);
 
@@ -909,25 +930,12 @@ function App() {
           portalType: sp.portalType,
         }));
       const fallsAt = r.game.finished && r.game.diedAtHour <= lastHour ? r.game.diedAtHour : null;
-      const boundAfterEdge = fallsAt === null ? fallsNoLaterThan(r.game, r.portals, state.config) : null;
-      return { spawns, edgeHour: lastHour, fallsAt, boundAfterEdge };
+      return { spawns, edgeHour: lastHour, fallsAt };
     } catch (error) {
       console.error('Forecast failed:', error);
       return null;
     }
   }, [state, projected, now]);
-
-  const secondsUntilHour = (hour: bigint): bigint => {
-    const s = (game?.startedAt ?? 0n) + hour * (state?.config.secPerHour ?? 0n) - now;
-    return s > 0n ? s : 0n;
-  };
-  // Latest fall hour while the world is held at the edge of its random word.
-  const pausedBound =
-    state && projected && projected.cappedShort && !projected.game.finished && !state.pending.active
-      ? fallsNoLaterThan(projected.game, projected.portals, state.config)
-      : null;
-  const wallHour =
-    game && state && state.config.secPerHour > 0n ? (now - game.startedAt) / state.config.secPerHour : 0n;
 
   return (
     <div className="app">
@@ -998,9 +1006,10 @@ function App() {
           </div>
           {confirmWithdraw && owner && balance !== null && prices && (
             <div className="warn-message">
-              Send ~{Number(formatEther(withdrawAmount(balance, prices.gasPrice))).toFixed(4)} MON to {owner}? Your game key will be
+              Send {transferGas === null ? '~' : ''}{Number(formatEther(withdrawAmount(balance, prices.gasPrice, transferGas ?? TRANSFER_GAS))).toFixed(4)} MON to {owner}? Your game key will be
               empty and cannot act until topped up.{' '}
-              <button onClick={withdrawToWallet} disabled={busy || !!state?.pending.active}>Withdraw</button>{' '}
+              {transferGasError && <div className="error-message">{transferGasError}</div>}
+              <button onClick={withdrawToWallet} disabled={busy || !!state?.pending.active || !!transferGasError}>Withdraw</button>{' '}
               <button onClick={() => setConfirmWithdraw(false)}>Cancel</button>
             </div>
           )}
@@ -1082,12 +1091,36 @@ function App() {
       {autoStatus && <div className="info-message">{autoStatus}</div>}
       {state?.pending.active && (
         <div className="info-message">
-          Waiting for the random word from Pyth: action {Action[state.pending.action]} on slot {String(state.pending.slot)}
-          {state.pending.syncOnly ? ' (paid sync)' : ''}, request #{String(state.pending.requestId)}.
-          Checking every {PENDING_POLL_MS / 1000} s…
+          {state.pending.syncOnly
+            ? <>Waiting for the random word from Pyth (paid sync), request #{String(state.pending.requestId)}.</>
+            : <>Waiting for the random word from Pyth: action {Action[state.pending.action]} on slot {String(state.pending.slot)}, request #{String(state.pending.requestId)}.</>}
+          {' '}Checking every {PENDING_POLL_MS / 1000} s…
           <div>
             {cancelWait > 0n ? (
               <>Can be cancelled in {String(cancelWait)} s</>
+            ) : state.pending.deferredWorld || state.pending.syncOnly ? (
+              confirmCancel ? (
+                <div className="warn-message">
+                  Cancelling now ends this run at hour {String(state.pending.atHour)}, the edge of its random word, and records it there. The Pyth fee is not refunded.
+                  <div>
+                    <button
+                      className="danger"
+                      onClick={() => {
+                        setConfirmCancel(false);
+                        void cancelRequest();
+                      }}
+                      disabled={!burner || busy}
+                    >
+                      End run and cancel
+                    </button>{' '}
+                    <button onClick={() => setConfirmCancel(false)}>Keep waiting</button>
+                  </div>
+                </div>
+              ) : (
+                <button onClick={() => setConfirmCancel(true)} disabled={!burner || busy}>
+                  Cancel request…
+                </button>
+              )
             ) : (
               <>
                 <button onClick={() => cancelRequest()} disabled={!burner || busy}>
@@ -1158,17 +1191,7 @@ function App() {
             <div className="info-message">
               The world is paused at hour {String(game.hoursElapsed)}. It needs a fresh random epoch word;
               any action will fetch one (Pyth fee).
-              {pausedBound !== null &&
-                (wallHour < pausedBound ? (
-                  <p className="forecast-death">
-                    Without a new word the lab falls no later than hour {String(pausedBound)} (in{' '}
-                    {String(secondsUntilHour(pausedBound))} s).
-                  </p>
-                ) : (
-                  <p className="forecast-death">
-                    The lab has fallen by hour {String(pausedBound)} at the latest. Sync (pays for word) to record the run.
-                  </p>
-                ))}
+              <p className="forecast-death">Without a new word this run will be recorded at hour {String(game.hoursElapsed)}: time past the edge of the random word does not count.</p>
             </div>
           )}
 
@@ -1299,12 +1322,8 @@ function App() {
                 </ul>
               )}
               {forecast.edgeHour !== null && <p>The current random word covers up to hour {String(forecast.edgeHour)}.</p>}
-              {forecast.boundAfterEdge !== null && (
-                <p className="forecast-death">
-                  Without a new random word after hour {String(forecast.edgeHour)}, the lab falls no later than hour{' '}
-                  {String(forecast.boundAfterEdge)} (in{' '}
-                  {String(secondsUntilHour(forecast.boundAfterEdge))} s).
-                </p>
+              {forecast.fallsAt === null && (
+                <p className="forecast-death">Without a new random word after hour {String(forecast.edgeHour)}, the run will be recorded at hour {String(forecast.edgeHour)}.</p>
               )}
             </div>
           )}

@@ -484,8 +484,19 @@ contract SettleTest is Test {
         // spawn pressure (ticket 8.1) and moves with it; the equalities above are
         // the real assertion.
         // Fill hour: 30_000 + 1000h + h(h-1) >= 120_000 -> h = 84 (h=83: 89_806 < 90_000).
-        // Overflow: 80 hp / 5 per hour = 16 h. 84 + 16 = 100.
-        assertEq(h1, 100, "expected death hour is 100 for default config");
+        // Overflow: 80 hp / 5 per hour = 16 h. The trigger is 84 + 16 = 100, but
+        // the run is recorded at the pinned edge: nothing is pinned, so hour 0.
+        assertEq(h1, 0, "recorded at the edge: hour 0 with nothing pinned");
+
+        // The trigger hour itself (100) still decides WHEN the run is over.
+        address a4 = address(0xA004);
+        uint256 t4 = vm.getBlockTimestamp();
+        vm.prank(a4); harness.startGame();
+        vm.warp(t4 + 99 * uint256(SPH));
+        vm.expectRevert(PortalLab.GameNotFinished.selector);
+        harness.settle(a4);
+        vm.warp(t4 + 100 * uint256(SPH));
+        harness.settle(a4);
     }
 
     // ── 4.2: game dies during absence, then startGame → no GameForfeited ──────

@@ -15,3 +15,6 @@ shared/node_modules/
 
 # Claude Code scheduler lock (service file, never versioned)
 .claude/scheduled_tasks.lock
+
+.env
+.env.*

@@ -310,9 +310,12 @@ export function catchUp(
     // 4. Beyond the pinned edge (§5.5): the world cannot be walked there (no word,
     //    so no births), but the abandoned-lab overflow needs no word. From the
     //    state at hEnd, find the hour the remaining pressure would fill the lab;
-    //    if the ensuing overflow is lethal by hNow, the run ends then. No portal
-    //    is created in the tail. A lab already full at hEnd is not considered.
-    //    Not applied after a blown fuse.
+    //    if the ensuing overflow is lethal by hNow, the run is over. It is
+    //    recorded at the edge hEnd, the last hour it was verifiably alive, NOT at
+    //    the trigger hour: the tail is not lived, so not paying for the next word
+    //    can never score more than paying on. The trigger only decides WHETHER
+    //    the run is over by hNow. No portal is created in the tail. A lab already
+    //    full at hEnd is not considered. Not applied after a blown fuse.
     let tailDeath = false;
     if (!w.died && !fuse && cappedShort && c.hpOverflowPerHour > 0n && w.openCount < MAX_OPEN_PORTALS) {
         const debtE = subChecked(w.aEnd, w.births * c.spawnCostUnits);
@@ -323,7 +326,7 @@ export function catchUp(
             const dh = hFill + (g.hp + ov - 1n) / ov; // + ceil(hp / ov)
             if (dh <= w.hNow) {
                 w.died = true;
-                w.deathHour = dh;
+                w.deathHour = w.hEnd;
                 tailDeath = true;
             }
         }

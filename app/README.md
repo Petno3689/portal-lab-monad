@@ -20,6 +20,13 @@ Live: https://portal-lab-monad.vercel.app
 - **Journal.** A scrollable list of the current game's events for the account (spawns, collapses, closes, rescues, actions, surveys, cancellations, game over, settlement), newest first, at most 200 lines, built from the contract's event log. On load it scans backward from the latest block to this game's `GameStarted` (at most 50 chunks; otherwise "Older entries not loaded" is shown), then reads only new blocks on each state refresh. Lines are ordered by game hour, then block, then log index, because catch-up emits collapses before births.
 - **Leaderboard.** Reads `leaderboardSize` and `leaderboardPage` (pages of 100), sorts by hours survived, creatures rescued, then earliest settlement, and shows the top 20 with the connected account highlighted (its own row is added below when it ranks lower). Readable without a wallet; refreshed after settle / start game. If the contract has no leaderboard views, the table is replaced by "Leaderboard is not available on this contract."
 - **Chunked log reads.** The public RPC accepts `eth_getLogs` over about 101 blocks and rejects 1000, so every event-log read (journal, deferred-action outcomes) is split into sequential chunks of at most 100 blocks, filtered by contract address and the player topic. Deferred outcomes scan backward from the block where the pending action was seen to clear, at most 50 chunks.
+- **Game key.** One wallet signature derives a separate key that plays for the owner without a pop-up per action; the key lives only in `sessionStorage`.
+- **Funds panel.** Top up the game key and withdraw its balance; the withdrawal gas is estimated, so smart-wallet owners are handled.
+- **Automation.** Automatic word purchase at the epoch edge and automatic settle, on by default and switchable per key; on failure they back off 30 s and stop after 3 failures.
+- **Nicknames** for the leaderboard via the `NameRegistry` contract.
+- **RPC limiter.** At most 10 requests per second (the public RPC allows 15).
+- **Transaction queue** that waits 3 blocks after each inclusion (Monad reserve balance).
+- **Tests.** Unit tests with vitest (`npm test`).
 
 ## Setup
 
@@ -32,10 +39,10 @@ npm install
 
 ### Contract address
 
-Set the deployed address in `src/config.ts`:
+Set the deployed address in `src/config.ts` (currently the 18 November 2026 deployment):
 
 ```typescript
-export const PORTAL_LAB_ADDRESS = "0x..." as const;
+export const PORTAL_LAB_ADDRESS = "0xab2326F2c6Fcbd430FEDa33fA2476Ea88C4E2d8e" as const;
 ```
 
 After a redeploy, both this address and `src/PortalLab.abi.json` must match the new contract. If the storage layout of `Player` ever changes, update `PLAYERS_SLOT` and `EPOCH_WORD_OFFSET` in `src/contract.ts` as well.
@@ -57,8 +64,3 @@ npm run dev -- --host 127.0.0.1
 ```bash
 npm run build
 ```
-
-## Not built
-
-- Session keys (every action is signed in the wallet)
-- Front-end tests

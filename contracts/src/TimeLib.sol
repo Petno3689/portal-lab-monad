@@ -271,11 +271,14 @@ library TimeLib {
         // 4. Beyond the pinned edge (§5.5): the world cannot be walked there (no
         //    word, so no births), but the abandoned-lab overflow needs no word. From
         //    the state at hEnd, find the hour the remaining pressure would fill the
-        //    lab; if the ensuing overflow is lethal by hNow, the run ends then. No
-        //    portal is created in the tail. As before, a lab already full at the
-        //    edge is not considered (the rule fills a lab, it does not drain a full
-        //    one). Not applied after a blown fuse: there the next call simply
-        //    continues the walk.
+        //    lab; if the ensuing overflow is lethal by hNow, the run is over. It is
+        //    recorded at the edge hEnd, the last hour it was verifiably alive, NOT
+        //    at the trigger hour: the tail is not lived, so not paying for the next
+        //    word can never score more than paying on. The trigger only decides
+        //    WHETHER the run is over by hNow. No portal is created in the tail. As
+        //    before, a lab already full at the edge is not considered (the rule
+        //    fills a lab, it does not drain a full one). Not applied after a blown
+        //    fuse: there the next call simply continues the walk.
         bool tailDeath = false;
         if (!w.died && !fuse && cappedShort && c.hpOverflowPerHour > 0 && w.openCount < MAX_OPEN_PORTALS) {
             uint256 debtE = w.aEnd - w.births * uint256(c.spawnCostUnits);
@@ -286,7 +289,7 @@ library TimeLib {
                 uint256 dh = hFill + (uint256(g.hp) + ov - 1) / ov; // + ceil(hp / ov)
                 if (dh <= w.hNow) {
                     w.died = true;
-                    w.deathHour = dh;
+                    w.deathHour = w.hEnd;
                     tailDeath = true;
                 }
             }
@@ -403,7 +406,7 @@ library TimeLib {
     /// No per-hour scan. Every hour at or after `lo` adds at least the pressure of
     /// hour `lo` itself, `r = basePressurePerHour + pressureRampPerHour * lo`, so the
     /// answer lies within `ceil(shortfall / r)` hours of `lo`. With a flat rate that
-    /// estimate IS the answer, and with the deployed ramp (1 unit per hour against
+    /// estimate IS the answer, and with the deployed ramp (2 units per hour against
     /// 1000) it nearly always is: one evaluation at the hour before confirms it.
     /// Otherwise a BINARY SEARCH capped at 64 iterations finishes the job. This was
     /// chosen over an integer square root of the quadratic closed form: it costs

@@ -719,7 +719,8 @@ contract IdealGameTest is Test {
         console2.log("");
 
         // ── 2.3 Cost table ────────────────────────────────────────────────────
-        // Prices: testnet=0.12816 MON/req, mainnet=0.4 MON/req.
+        // Prices (assumed, the Pyth fee changes over time): testnet=0.12816 MON/req
+        // (measured 28 Oct 2026; 0.1238 on 16 Nov), mainnet=0.4 MON/req.
         // Cost column = requests × price, shown in units of 10^-5 MON.
         //   (divide by 100000 to get MON; e.g. 1281600 = 12.816 MON)
         // Testnet factor: 12816.  Mainnet factor: 40000.
@@ -804,7 +805,7 @@ contract IdealGameTest is Test {
 
         for (uint256 iter = 0; iter < 200; iter++) {
             uint256 jumpSeconds = 24 * uint256(c.secPerHour);
-            vm.warp(block.timestamp + jumpSeconds);
+            vm.warp(vm.getBlockTimestamp() + jumpSeconds);
 
             // Pay to bring the world forward across epoch edges and commit events.
             _advance(player);
@@ -906,7 +907,7 @@ contract IdealGameTest is Test {
 
         for (uint256 iter = 0; iter < 3000; iter++) {
             // Age forward exactly ONE game hour.
-            vm.warp(block.timestamp + uint256(c.secPerHour));
+            vm.warp(vm.getBlockTimestamp() + uint256(c.secPerHour));
 
             // Catch the world up first (pay across epoch edges; records
             // collapses/spawns and any death).

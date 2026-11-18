@@ -3,6 +3,7 @@ pragma solidity 0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {PortalLab} from "../src/PortalLab.sol";
+import {GameConfig} from "../src/GameConfig.sol";
 import {
     Config,
     Game,
@@ -181,7 +182,7 @@ contract RequestTimeoutTest is Test {
         uint64 reqId = _commitCrossing(50);
         Game memory before_ = harness.getGame(player);
         assertEq(before_.power, 50, "crossing commit spends nothing");
-        vm.warp(block.timestamp + TIMEOUT + 1);
+        vm.warp(vm.getBlockTimestamp() + TIMEOUT + 1);
 
         vm.expectEmit(true, true, false, true);
         emit PortalLab.DeferredActionCancelled(
@@ -207,7 +208,7 @@ contract RequestTimeoutTest is Test {
         harness.sync{value: 1}(player);
         Pending memory pend = harness.getPending(player);
         assertTrue(pend.active && pend.syncOnly, "sync deferral");
-        vm.warp(block.timestamp + TIMEOUT + 1);
+        vm.warp(vm.getBlockTimestamp() + TIMEOUT + 1);
         harness.cancelDeferred(player);
 
         assertFalse(harness.getPending(player).active, "lock released");
@@ -285,11 +286,11 @@ contract RequestTimeoutTest is Test {
     function test_6_7_CrossingCancelledWhileGameClockStands() public {
         _commitCrossing(50);
 
-        vm.warp(block.timestamp + TIMEOUT); // not yet
+        vm.warp(vm.getBlockTimestamp() + TIMEOUT); // not yet
         vm.expectRevert();
         harness.cancelDeferred(player);
 
-        vm.warp(block.timestamp + 1);
+        vm.warp(vm.getBlockTimestamp() + 1);
         harness.cancelDeferred(player); // real time passed -> allowed
         assertFalse(harness.getPending(player).active);
         assertLe(harness.getGame(player).hoursElapsed, uint32(1) * EPH - 1, "world has not crossed the pinned edge");
@@ -396,6 +397,63 @@ contract RequestTimeoutTest is Test {
         vm.warp(BASE + t + 1);
         lab.cancelDeferred(player);
         assertEq(lab.getGame(player).power, 29 + d.powerRegenPerHour + 11, "21 -> 11, not 10");
+    }
+
+    /// The deployed numbers (requestTimeoutHours 8, outsiderTimeoutHours 40, 15 s per
+    /// hour) on a real `startGame` flow: the player's own cancel opens 120 s after the
+    /// commit, a stranger's only after 600 s, and the refund is half the cost.
+    function test_DeployedConfig_PlayerCancelRefundsCrewAndPower() public {
+        Config memory c = GameConfig.config();
+        DeterministicSource src = new DeterministicSource(0);
+        src.setFee(0.01 ether);
+        PortalLab lab = new PortalLab(c, GameConfig.portalTypeParams(), src);
+        vm.deal(player, 10 ether);
+
+        lab.startGame{value: src.fee()}();
+        src.reveal(lab.getPending(player).requestId);
+        assertFalse(lab.getPending(player).active, "first word delivered");
+
+        Portal[MAX_OPEN_PORTALS] memory ps = lab.getPortals(player);
+        uint8 slot = uint8(MAX_OPEN_PORTALS);
+        for (uint8 i = 0; i < MAX_OPEN_PORTALS; i++) {
+            if (ps[i].status == PortalStatus.Open && !ps[i].surveyed) {
+                slot = i;
+                break;
+            }
+        }
+        assertLt(slot, MAX_OPEN_PORTALS, "an unsurveyed portal exists");
+
+        lab.act{value: src.fee()}(slot, Action.SendObserver);
+        Pending memory pend = lab.getPending(player);
+        assertTrue(pend.active && !pend.deferredWorld && !pend.syncOnly, "two-phase survey committed");
+        assertEq(lab.getGame(player).observersFree, c.observersTotal - 1, "observer sent in");
+
+        uint256 availableAt = uint256(pend.committedAt) + uint256(c.requestTimeoutHours) * c.secPerHour;
+        uint256 outsiderAt = uint256(pend.committedAt) + uint256(c.outsiderTimeoutHours) * c.secPerHour;
+        assertEq(availableAt, uint256(pend.committedAt) + 8 * 15, "player waits 8 game hours");
+        assertEq(outsiderAt, uint256(pend.committedAt) + 40 * 15, "stranger waits 40 game hours");
+
+        vm.warp(availableAt);
+        vm.expectRevert(abi.encodeWithSelector(PortalLab.RequestNotTimedOut.selector, availableAt + 1));
+        lab.cancelDeferred(player);
+
+        vm.warp(availableAt + 1);
+        vm.prank(address(0xBEEF));
+        vm.expectRevert(abi.encodeWithSelector(PortalLab.RequestNotTimedOut.selector, outsiderAt + 1));
+        lab.cancelDeferred(player);
+
+        (Game memory before_,,) = lab.preview(player);
+        lab.cancelDeferred(player);
+
+        Game memory g = lab.getGame(player);
+        Portal memory p = lab.getPortals(player)[slot];
+        assertFalse(lab.getPending(player).active, "lock released");
+        assertFalse(p.surveyPending, "survey flag cleared");
+        assertFalse(p.observerInside, "observer out");
+        assertEq(g.observersFree, c.observersTotal, "observer free again");
+        uint256 expected = uint256(before_.power) + (uint256(c.costSendObserver) + 1) / 2;
+        if (expected > c.powerMax) expected = c.powerMax;
+        assertEq(g.power, expected, "half the cost back, capped at powerMax");
     }
 
     function test_Gas_CancelDeferred() public {

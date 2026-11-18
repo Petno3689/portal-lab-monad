@@ -27,17 +27,28 @@ describe('canPayWord', () => {
 describe('withdrawAmount', () => {
   const reserve = TRANSFER_GAS * 5n;
   it('leaves exactly the transfer gas behind', () => {
-    expect(withdrawAmount(reserve + 100n, 5n)).toBe(100n);
+    expect(withdrawAmount(reserve + 100n, 5n, TRANSFER_GAS)).toBe(100n);
   });
   it('is zero when the balance only covers the transfer gas', () => {
-    expect(withdrawAmount(reserve, 5n)).toBe(0n);
+    expect(withdrawAmount(reserve, 5n, TRANSFER_GAS)).toBe(0n);
   });
   it('is zero, not negative, when the balance is below the transfer gas', () => {
-    expect(withdrawAmount(reserve - 1n, 5n)).toBe(0n);
-    expect(withdrawAmount(0n, 5n)).toBe(0n);
+    expect(withdrawAmount(reserve - 1n, 5n, TRANSFER_GAS)).toBe(0n);
+    expect(withdrawAmount(0n, 5n, TRANSFER_GAS)).toBe(0n);
   });
   it('is the whole balance at a zero fee', () => {
-    expect(withdrawAmount(77n, 0n)).toBe(77n);
+    expect(withdrawAmount(77n, 0n, TRANSFER_GAS)).toBe(77n);
+  });
+  it('gives the same amount at 21 000 gas as the fixed-gas rule did', () => {
+    expect(withdrawAmount(1_000_000n, 5n, 21_000n)).toBe(1_000_000n - 21_000n * 5n);
+  });
+  it('gives a smaller amount when the transfer needs more gas', () => {
+    expect(withdrawAmount(1_000_000n, 5n, 50_000n)).toBe(1_000_000n - 50_000n * 5n);
+    expect(withdrawAmount(1_000_000n, 5n, 50_000n)).toBeLessThan(withdrawAmount(1_000_000n, 5n, 21_000n));
+  });
+  it('is zero when the balance does not cover the larger gas cost', () => {
+    expect(withdrawAmount(21_000n * 5n + 100n, 5n, 50_000n)).toBe(0n);
+    expect(withdrawAmount(50_000n * 5n, 5n, 50_000n)).toBe(0n);
   });
 });
 

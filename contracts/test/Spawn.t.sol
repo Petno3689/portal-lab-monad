@@ -20,8 +20,8 @@ contract SpawnHarness is PortalLabHarness {
 /// SPEC §4.6, §5.5, §7). State is prepared through `SpawnHarness`; structs are
 /// built fresh by helpers (never assigned by copy — CLAUDE.md rule).
 ///
-/// `DefaultConfig` (all placeholders): secPerHour 15, MAX_OPEN_PORTALS 12,
-/// maxSpawnsPerTx 3, basePressurePerHour 1000, pressureRampPerHour 2,
+/// `DefaultConfig` (the deployed numbers from `GameConfig`): secPerHour 15,
+/// MAX_OPEN_PORTALS 12, basePressurePerHour 1000, pressureRampPerHour 2,
 /// spawnCostUnits 10_000, closePressureBonus 2500, hpMax 100,
 /// hpOverflowPerHour 5. Pressure over game hours [a,b) is the closed form
 ///   base*(b-a) + ramp*((a+b-1)*(b-a))/2.
@@ -401,7 +401,7 @@ contract SpawnTest is Test {
         _setupTwo(shortP, 100);
         _setupTwo(longP, 100);
 
-        // 30 h already accrues maxSpawnsPerTx portals (P(0,30) = 30_435 ≥ 3*cost
+        // 30 h already accrues three portals' worth of pressure (P(0,30) = 30_870 ≥ 3*cost
         // for the two free-slot budget), so both calls create the same number of
         // portals and the only extra cost the long pause pays is the binary
         // search — which is O(1) in the pause length.

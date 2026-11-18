@@ -406,7 +406,7 @@ library TimeLib {
     /// No per-hour scan. Every hour at or after `lo` adds at least the pressure of
     /// hour `lo` itself, `r = basePressurePerHour + pressureRampPerHour * lo`, so the
     /// answer lies within `ceil(shortfall / r)` hours of `lo`. With a flat rate that
-    /// estimate IS the answer, and with the deployed ramp (1 unit per hour against
+    /// estimate IS the answer, and with the deployed ramp (2 units per hour against
     /// 1000) it nearly always is: one evaluation at the hour before confirms it.
     /// Otherwise a BINARY SEARCH capped at 64 iterations finishes the job. This was
     /// chosen over an integer square root of the quadratic closed form: it costs

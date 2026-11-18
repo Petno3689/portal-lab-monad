@@ -25,9 +25,10 @@ import {TimeLib} from "./TimeLib.sol";
 import {IRandomSource, IRandomConsumer} from "./IRandomSource.sol";
 
 /// @title PortalLab — on-chain core of the "Unstable Portals Lab" game (Monad).
-/// @notice Ticket 1.1: data model, configuration and game start only. No risk,
-/// no actions, no ageing, no spawns, no Pyth, no leaderboard — those are later
-/// tickets. See `docs/SPEC.md`.
+/// @notice The whole game on chain: configuration, game start, actions, lazy ageing
+/// of the world by formula, births, random words delivered by an `IRandomSource`
+/// (Pyth Entropy), request timeouts, settlement and the leaderboard. See
+/// `docs/SPEC.md`.
 ///
 /// @dev Storage layout:
 ///   - `_config` (Config) and `_portalTypeParams` (PortalTypeParams[5]) are
@@ -67,8 +68,8 @@ contract PortalLab is IRandomConsumer {
     /// @notice Reverts when the ETH change refund to the caller fails.
     error RefundFailed();
 
-    /// @notice Reverts when `RulesLib.check` returns a non-None refusal.
-    /// Declared here for ticket 1.5 to use; not yet thrown anywhere.
+    /// @notice Reverts when the game is already over (`GameNotActive`) or
+    /// `RulesLib.check` returns a non-None refusal for the requested action.
     error ActionRefused(Refusal reason);
 
     /// @notice Reverts when `cancelDeferred` finds no outstanding deferral.

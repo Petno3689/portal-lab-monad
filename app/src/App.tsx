@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { formatEther, isAddress, toHex, type Address, type Hex } from 'viem';
 import { privateKeyToAccount, type PrivateKeyAccount } from 'viem/accounts';
 import { MONAD_CHAIN_ID, MONAD_RPC_URL } from './config';
-import { publicClient, readPlayer, readPending, readPreview, readFee, readCanAct, readBestRun, readDeferredOutcome, readGasPrice, sendTx, sendNameTx, readName, topUp, withdraw, revertOf, isInsufficientFunds, TxReverted, type ChainState } from './contract';
+import { publicClient, readPlayer, readPending, readPreview, readFee, readCanAct, readBestRun, readDeferredOutcome, readGasPrice, sendTx, sendNameTx, readName, topUp, withdraw, estimateTransferGas, revertOf, isInsufficientFunds, TxReverted, type ChainState } from './contract';
 import {
   SESSION_MESSAGE,
   checkBurner,
@@ -21,7 +21,7 @@ import {
   type StorageLike,
 } from './sessionKey';
 import { createTxQueue } from './txQueue';
-import { canPayWord, parseTopUp, withdrawAmount, wordCost } from './funds';
+import { TRANSFER_GAS, canPayWord, parseTopUp, withdrawAmount, wordCost } from './funds';
 import { createBackoff, isExpectedRevert, shouldAutoBuyWord, shouldAutoSettle, type Backoff } from './autopilot';
 import { preview } from '@shared/preview';
 import { catchUp } from '@shared/time';
@@ -211,6 +211,8 @@ function App() {
   const [prices, setPrices] = useState<{ fee: bigint; gasPrice: bigint } | null>(null);
   const [topUpInput, setTopUpInput] = useState('3');
   const [confirmWithdraw, setConfirmWithdraw] = useState(false);
+  const [transferGas, setTransferGas] = useState<bigint | null>(null);
+  const [transferGasError, setTransferGasError] = useState<string | null>(null);
   const [nickname, setNickname] = useState<string | null>(null);
   const [nameInput, setNameInput] = useState('');
   const [gasPct, setGasPct] = useState(120);
@@ -842,6 +844,22 @@ function App() {
 
   const burnerAddr = burner?.address;
   useEffect(() => {
+    setTransferGas(null);
+    setTransferGasError(null);
+    if (!confirmWithdraw || !burnerAddr || !owner) return;
+    let cancelled = false;
+    estimateTransferGas(burnerAddr, owner)
+      .then((gas) => {
+        if (!cancelled) setTransferGas(gas);
+      })
+      .catch((error) => {
+        if (!cancelled) setTransferGasError(error instanceof Error ? error.message : String(error));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [confirmWithdraw, burnerAddr, owner]);
+  useEffect(() => {
     if (burnerAddr) refreshNickname(burnerAddr);
   }, [burnerAddr, refreshNickname]);
 
@@ -988,9 +1006,10 @@ function App() {
           </div>
           {confirmWithdraw && owner && balance !== null && prices && (
             <div className="warn-message">
-              Send ~{Number(formatEther(withdrawAmount(balance, prices.gasPrice))).toFixed(4)} MON to {owner}? Your game key will be
+              Send {transferGas === null ? '~' : ''}{Number(formatEther(withdrawAmount(balance, prices.gasPrice, transferGas ?? TRANSFER_GAS))).toFixed(4)} MON to {owner}? Your game key will be
               empty and cannot act until topped up.{' '}
-              <button onClick={withdrawToWallet} disabled={busy || !!state?.pending.active}>Withdraw</button>{' '}
+              {transferGasError && <div className="error-message">{transferGasError}</div>}
+              <button onClick={withdrawToWallet} disabled={busy || !!state?.pending.active || !!transferGasError}>Withdraw</button>{' '}
               <button onClick={() => setConfirmWithdraw(false)}>Cancel</button>
             </div>
           )}
@@ -1082,7 +1101,7 @@ function App() {
             ) : state.pending.deferredWorld || state.pending.syncOnly ? (
               confirmCancel ? (
                 <div className="warn-message">
-                  Cancelling now ends this run at hour {String(state.game.hoursElapsed)}, the edge of its random word, and records it there. The Pyth fee is not refunded.
+                  Cancelling now ends this run at hour {String(state.pending.atHour)}, the edge of its random word, and records it there. The Pyth fee is not refunded.
                   <div>
                     <button
                       className="danger"
